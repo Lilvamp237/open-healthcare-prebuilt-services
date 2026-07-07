@@ -13,15 +13,51 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-import ballerina/http;
-import ballerinax/health.fhir.r4;
+import ballerina/file;
 
-public const string FHIR_SNOMED_FILE_NAME = "/snomed-codesystem.json";
+// Function to read an RF2 Snapshot release directory and produce the inputs the DB layer
+// needs to import SNOMED CT
+public isolated function buildSnomedImport(string dirPath, string? version) returns SnomedImportBundle|error {
+    string conceptFilePath = check findRf2File(dirPath, RF2_CONCEPT_PREFIX);
+    string descriptionFilePath = check findRf2File(dirPath, RF2_DESCRIPTION_PREFIX);
+    // Relationship file is required — POC parent linking depends on it. Fail
+    // fast if it isn't in the zip.
+    string relationshipFilePath = check findRf2File(dirPath, RF2_RELATIONSHIP_PREFIX);
 
-public isolated function convert(string filePath, string? version) returns error? {
-    return r4:createFHIRError(
-                    "SNOMED upload is not implemented yet",
-            r4:ERROR,
-            r4:INVALID_REQUIRED,
-            httpStatusCode = http:STATUS_NOT_IMPLEMENTED);
+    [map<ConceptDescriptions>, int] descResult = check streamDescriptionIndex(descriptionFilePath);
+    map<ConceptDescriptions> descIndex = descResult[0];
+    int descriptionsRead = descResult[1];
+
+    // TextDefinition is optional
+    map<string> defIndex = {};
+    int textDefinitionsRead = 0;
+    string|error textDefinitionFilePath = findRf2File(dirPath, RF2_TEXT_DEFINITION_PREFIX);
+    if textDefinitionFilePath is string {
+        boolean exists = check file:test(textDefinitionFilePath, file:EXISTS);
+        if exists {
+            [map<string>, int] defResult = check streamTextDefinitionIndex(textDefinitionFilePath);
+            defIndex = defResult[0];
+            textDefinitionsRead = defResult[1];
+        }
+    }
+
+    // Stream concepts
+    [SnomedConceptImport[], int] conceptResult = check streamConceptImports(conceptFilePath, descIndex, defIndex);
+    SnomedConceptImport[] importRecords = conceptResult[0];
+    int conceptsRead = conceptResult[1];
+
+    descIndex = {};
+    defIndex = {};
+
+    [map<string>, int] parentResult = check streamSnomedRelationshipsToParentMap(relationshipFilePath);
+
+    return {
+        codeSystemMetadata: buildSnomedCodeSystemMetadata(version),
+        concepts: importRecords,
+        parentByChildSctid: parentResult[0],
+        conceptsRead: conceptsRead,
+        descriptionsRead: descriptionsRead,
+        textDefinitionsRead: textDefinitionsRead,
+        relationshipsRead: parentResult[1]
+    };
 }

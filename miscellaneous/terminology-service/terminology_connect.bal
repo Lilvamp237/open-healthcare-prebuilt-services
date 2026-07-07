@@ -15,7 +15,6 @@
 // under the License.
 
 import terminology_service.loinc_to_fhir as loinc;
-import terminology_service.snomed_to_fhir as snomed;
 
 import ballerina/http;
 import ballerina/regex;
@@ -591,11 +590,9 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
         // SNOMED
         else if typeHeader == SNOMED {
             string? version = payload.getQueryParamValue("snomed-version");
-            check snomed:convert(dirPath + ZIP_FILE_EXTRACTION_PATH, version);
-
-            r4:CodeSystem codeSystem = check readFileJsonAndReturnCodeSystem(dirPath + ZIP_FILE_EXTRACTION_PATH + snomed:FHIR_SNOMED_FILE_NAME);
-
-            result = terminology:addCodeSystem(codeSystem, terminology = terminology_source);
+            _ = start runSnomedImportAsync(dirPath + ZIP_FILE_EXTRACTION_PATH, version, dirPath);
+            log:printInfo("SNOMED import scheduled in background; check server logs for completion.");
+            return ();
         }
 
         _ = start removeDirectory(dirPath);

@@ -1,9 +1,25 @@
-#import ballerina/time;
+// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+
+// http://www.apache.org/licenses/LICENSE-2.0
+
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import ballerinax/health.fhir.r4;
 
 public const string SNOMED_SYSTEM_URL = "http://snomed.info/sct";
 public const string SNOMED_CODE_SYSTEM_ID = "snomed-ct";
 public const string SNOMED_CODE_SYSTEM_NAME = "SNOMEDCT";
-public const string SNOMED_CODE_SYSTEM_TITLE = "SNOMED CT";
+public const string SNOMED_CODE_SYSTEM_TITLE = "SNOMED Clinical Terms";
 public const string SNOMED_PUBLISHER = "SNOMED International";
 
 public const string SNOMED_FSN_TYPE_ID = "900000000000003001";
@@ -41,6 +57,19 @@ public type SnomedTextDefinitionRow record {|
     string caseSignificanceId;
 |};
 
+public type SnomedRelationshipRow record {|
+    string id;
+    string effectiveTime;
+    string active;
+    string moduleId;
+    string sourceId;
+    string destinationId;
+    string relationshipGroup;
+    string typeId;
+    string characteristicTypeId;
+    string modifierId;
+|};
+
 public type SnomedConceptImport record {|
     string code;
     string display;
@@ -62,4 +91,26 @@ public type SnomedImportSummary record {|
     int conceptsImported;
     int descriptionsRead;
     int textDefinitionsRead;
+    int relationshipsRead;
+    int parentsLinked;
+|};
+
+// FHIR SNOMED CodeSystem property URIs. Used when emitting CodeSystemConceptProperty.
+public const string SNOMED_PROP_URI_ACTIVE = "http://snomed.info/field/Concept.active";
+public const string SNOMED_PROP_URI_MODULE_ID = "http://snomed.info/field/Concept.moduleId";
+public const string SNOMED_PROP_URI_DEFINITION_STATUS_ID = "http://snomed.info/field/Concept.definitionStatusId";
+public const string SNOMED_PROP_URI_EFFECTIVE_TIME = "http://snomed.info/field/Concept.effectiveTime";
+
+// Carries the parsed + assembled inputs the DB layer needs, so the DB layer can
+// stay pure w.r.t. RF2 parsing.
+public type SnomedImportBundle record {|
+    r4:CodeSystem codeSystemMetadata;
+    SnomedConceptImport[] concepts;
+    //store one parent only for the POC 
+    //Populated from active is-a Relationship rows
+    map<string> parentByChildSctid;
+    int conceptsRead;
+    int descriptionsRead;
+    int textDefinitionsRead;
+    int relationshipsRead;
 |};

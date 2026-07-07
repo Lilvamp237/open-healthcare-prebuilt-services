@@ -6,6 +6,7 @@ CLAUDE.md
 .vscode
 .claude
 *.db
+*.hprof
 
 !test.zip
 !codesystem.zip

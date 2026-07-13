@@ -15,13 +15,10 @@
 // under the License.
 import ballerina/file;
 
-// Function to read an RF2 Snapshot release directory and produce the inputs the DB layer
-// needs to import SNOMED CT
+// Function to read an RF2 Snapshot release directory and produce the inputs the DB layer needs to import SNOMED CT
 public isolated function buildSnomedImport(string dirPath, string? version) returns SnomedImportBundle|error {
     string conceptFilePath = check findRf2File(dirPath, RF2_CONCEPT_PREFIX);
     string descriptionFilePath = check findRf2File(dirPath, RF2_DESCRIPTION_PREFIX);
-    // Relationship file is required — POC parent linking depends on it. Fail
-    // fast if it isn't in the zip.
     string relationshipFilePath = check findRf2File(dirPath, RF2_RELATIONSHIP_PREFIX);
 
     [map<ConceptDescriptions>, int] descResult = check streamDescriptionIndex(descriptionFilePath);

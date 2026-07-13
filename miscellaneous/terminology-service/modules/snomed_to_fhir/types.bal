@@ -96,13 +96,12 @@ public type SnomedImportSummary record {|
 |};
 
 // FHIR SNOMED CodeSystem property URIs. Used when emitting CodeSystemConceptProperty.
-public const string SNOMED_PROP_URI_ACTIVE = "http://snomed.info/field/Concept.active";
-public const string SNOMED_PROP_URI_MODULE_ID = "http://snomed.info/field/Concept.moduleId";
-public const string SNOMED_PROP_URI_DEFINITION_STATUS_ID = "http://snomed.info/field/Concept.definitionStatusId";
-public const string SNOMED_PROP_URI_EFFECTIVE_TIME = "http://snomed.info/field/Concept.effectiveTime";
+//public const string SNOMED_PROP_URI_ACTIVE = "http://snomed.info/field/Concept.active";
+//public const string SNOMED_PROP_URI_MODULE_ID = "http://snomed.info/field/Concept.moduleId";
+//public const string SNOMED_PROP_URI_DEFINITION_STATUS_ID = "http://snomed.info/field/Concept.definitionStatusId";
+//public const string SNOMED_PROP_URI_EFFECTIVE_TIME = "http://snomed.info/field/Concept.effectiveTime";
 
-// Carries the parsed + assembled inputs the DB layer needs, so the DB layer can
-// stay pure w.r.t. RF2 parsing.
+// Carries the parsed + assembled inputs the DB layer needs
 public type SnomedImportBundle record {|
     r4:CodeSystem codeSystemMetadata;
     SnomedConceptImport[] concepts;

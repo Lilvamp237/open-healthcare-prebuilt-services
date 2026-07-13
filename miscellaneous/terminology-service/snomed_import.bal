@@ -22,20 +22,13 @@ import ballerina/log;
 import ballerina/persist;
 import ballerinax/health.fhir.r4;
 
-// Chunk size for the concepts insert. Kept moderate so the persist client
-// doesn't buffer a full SNOMED release worth of rows in a single call.
 const int SNOMED_INSERT_BATCH_SIZE = 1000;
 
-// Log a progress line every N parent-link UPDATEs. Purely for operator
-// visibility while the async worker runs — nothing depends on this value.
 const int SNOMED_PARENT_LINK_PROGRESS_INTERVAL = 10000;
 
 // Import a SNOMED CT RF2 Snapshot from an extracted directory into the DB.
 // Writes one codesystems row (content = fragment, no concepts inlined) and one
-// concepts row per active SNOMED concept. Bypasses the generic
-// terminology:addCodeSystem path deliberately: that path inlines every concept
-// into the r4:CodeSystem and fans out one `start` worker per row, which does
-// not scale to SNOMED.
+// concepts row per active SNOMED concept.
 public isolated function importSnomedToDb(string dirPath, string? version) returns snomed:SnomedImportSummary|r4:FHIRError {
     snomed:SnomedImportBundle|error bundle = snomed:buildSnomedImport(dirPath, version);
     if bundle is error {
@@ -76,9 +69,7 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     }
     int codeSystemId = codeSystemResult[0];
 
-    // Pass 1: insert concepts (parentConceptId left null). Track code -> dbId
-    // as batches are flushed so pass 2 can resolve SCTID parent links to DB
-    // rows without a follow-up SELECT.
+    // Pass 1: insert concepts (parentConceptId left null)
     int imported = 0;
     map<int> dbIdByCode = {};
     store_h2:ConceptInsert[] batch = [];
@@ -123,11 +114,7 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
         imported += flushedIds.length();
     }
 
-    // Pass 2: link one parent per concept from active is-a relationships.
-    // Skip pairs where either side isn't in dbIdByCode — that covers parents
-    // of inactive concepts, orphaned references, and any RF2 hygiene issues.
-    // Errors on individual UPDATEs are logged and skipped rather than aborting
-    // the whole import; import summary counts what actually landed.
+    // Pass 2: link one parent per concept from active is-a relationships
     int parentsLinked = linkParents(bundle.parentByChildSctid, dbIdByCode);
 
     return {
@@ -143,11 +130,7 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     };
 }
 
-// Fire-and-forget wrapper around importSnomedToDb for use from the /$upload
-// handler. SNOMED imports take minutes on a full RF2 release, which exceeds the
-// HTTP idle timeout — so the handler launches this via `start` and returns 201
-// immediately. Errors and completion are logged; the temp directory holding
-// the extracted zip is removed after the import finishes so it doesn't leak.
+// Fire-and-forget wrapper around importSnomedToDb for use from the /$upload handler.
 public isolated function runSnomedImportAsync(string extractedPath, string? version, string tempDir) returns () {
     log:printInfo("SNOMED import worker started: extractedPath=" + extractedPath);
     snomed:SnomedImportSummary|r4:FHIRError result = importSnomedToDb(extractedPath, version);
@@ -176,9 +159,7 @@ isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[
 }
 
 // The persist ->post(batch) contract returns generated ids in the same order
-// as the input records, so we zip by index to build code -> dbId. If the
-// lengths diverge that would be a persist-layer contract break, so we bail
-// with a log and keep whatever we got.
+// as the input records, so we zip by index to build code -> dbId.
 isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] ids) {
     int count = codes.length() < ids.length() ? codes.length() : ids.length();
     if codes.length() != ids.length() {
@@ -189,11 +170,6 @@ isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] i
     }
 }
 
-// Walk the child->parent SCTID map, resolve each side against the DB-id map,
-// and UPDATE the child row's parentConceptId. Returns the number of rows
-// successfully updated. Missing dbIds (inactive parents, orphaned refs) and
-// per-row UPDATE failures are logged and skipped so a bad row doesn't abort
-// the entire link pass.
 isolated function linkParents(map<string> parentByChildSctid, map<int> dbIdByCode) returns int {
     int linked = 0;
     int skipped = 0;

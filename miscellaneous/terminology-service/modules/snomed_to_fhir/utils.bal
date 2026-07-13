@@ -1,3 +1,19 @@
+// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+
+// http://www.apache.org/licenses/LICENSE-2.0
+
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
@@ -8,22 +24,15 @@ const int DESCRIPTION_COLUMN_COUNT = 9;
 const int RELATIONSHIP_COLUMN_COUNT = 10;
 const int DB_STRING_COLUMN_LIMIT = 191;
 
-// RF2 file-name prefixes. RF2 Snapshot filenames follow the pattern
-// sct2_<Type>_Snapshot(-<lang>)_<edition>_<effectiveTime>.txt.
 const string RF2_CONCEPT_PREFIX = "sct2_Concept_Snapshot";
 const string RF2_DESCRIPTION_PREFIX = "sct2_Description_Snapshot-en";
 const string RF2_TEXT_DEFINITION_PREFIX = "sct2_TextDefinition_Snapshot-en";
-// Relationship files have no -<lang> segment. Match "sct2_Relationship_Snapshot"
-// exactly so we don't accidentally pick up sct2_StatedRelationship_Snapshot or
-// sct2_RelationshipConcreteValues_Snapshot in the same directory.
 const string RF2_RELATIONSHIP_PREFIX = "sct2_Relationship_Snapshot_";
 
 // SNOMED "is a" attribute typeId. Every taxonomic parent link uses this.
 public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
-// Parses RF2 Concept Snapshot TSV file.
-// This only reads RF2 rows into typed Ballerina records.
-// It does not create FHIR JSON and does not write to DB.
+// Functions to parse RF2 Snapshot files and read rows into typed Ballerina records
 public isolated function parseSnomedConceptFile(string filePath, int maxRows = -1) returns SnomedConceptRow[]|error {
     string content = check io:fileReadString(filePath);
     string[] lines = regex:split(content, "\\r?\\n");
@@ -62,8 +71,6 @@ public isolated function parseSnomedConceptFile(string filePath, int maxRows = -
     return concepts;
 }
 
-// Parses RF2 Description Snapshot TSV file.
-// This includes FSNs and synonyms.
 public isolated function parseSnomedDescriptionFile(string filePath, int maxRows = -1) returns SnomedDescriptionRow[]|error {
     string content = check io:fileReadString(filePath);
     string[] lines = regex:split(content, "\\r?\\n");
@@ -106,8 +113,6 @@ public isolated function parseSnomedDescriptionFile(string filePath, int maxRows
     return descriptions;
 }
 
-// Parses RF2 TextDefinition Snapshot TSV file.
-// This has the same column structure as Description Snapshot.
 public isolated function parseSnomedTextDefinitionFile(string filePath, int maxRows = -1) returns SnomedTextDefinitionRow[]|error {
     string content = check io:fileReadString(filePath);
     string[] lines = regex:split(content, "\\r?\\n");
@@ -150,9 +155,6 @@ public isolated function parseSnomedTextDefinitionFile(string filePath, int maxR
     return textDefinitions;
 }
 
-// Parses RF2 Relationship Snapshot TSV file. 10 columns per row.
-// Includes all relationship types (is-a plus attribute rows). Filtering to
-// is-a happens in buildParentByChildMap.
 public isolated function parseSnomedRelationshipFile(string filePath, int maxRows = -1) returns SnomedRelationshipRow[]|error {
     string content = check io:fileReadString(filePath);
     string[] lines = regex:split(content, "\\r?\\n");
@@ -260,15 +262,7 @@ public isolated function buildParentByChildMap(SnomedRelationshipRow[] relations
 }
 
 // Parse the RF2 Relationship Snapshot and reduce it to the parent-by-child map
-// in one pass, streaming the file line-by-line so we never hold the whole file
-// (or a SnomedRelationshipRow[] array) in memory. The full International
-// Relationship file (~4M rows, ~500 MB) is the biggest RF2 file and previously
-// tipped the JVM over its heap.
-//
-// Returns [parentMap, totalRowsRead]. totalRowsRead counts every well-formed
-// data row seen (including inactive and non-is-a rows) so the import summary
-// can still report the count. Only active is-a rows survive into the map, and
-// the first destinationId per sourceId wins.
+// in one pass, streaming the file line-by-line
 public isolated function streamSnomedRelationshipsToParentMap(string filePath) returns [map<string>, int]|error {
     map<string> parentByChild = {};
     int rowsRead = 0;
@@ -304,19 +298,12 @@ public isolated function streamSnomedRelationshipsToParentMap(string filePath) r
     return [parentByChild, rowsRead];
 }
 
-// Compact per-concept accumulator built while streaming the Description file.
-// Holds only the fields we need downstream (FSN + synonyms + case
-// significance), so we never retain the full 9-field description rows.
 type ConceptDescriptions record {|
     string? fsn;
     string[] synonyms;
     string? caseSignificanceId;
 |};
 
-// Stream the Description Snapshot and reduce it to a per-concept index of
-// active FSN + synonyms. Never materializes a SnomedDescriptionRow[] — for the
-// full release that array plus the grouped copy was the main heap hog.
-// Returns [index, totalRowsRead].
 isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDescriptions>, int]|error {
     map<ConceptDescriptions> index = {};
     int rowsRead = 0;
@@ -364,8 +351,6 @@ isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDe
     return [index, rowsRead];
 }
 
-// Stream the TextDefinition Snapshot into a per-concept index of the first
-// active text definition term. Returns [index, totalRowsRead].
 isolated function streamTextDefinitionIndex(string filePath) returns [map<string>, int]|error {
     map<string> index = {};
     int rowsRead = 0;
@@ -400,9 +385,7 @@ isolated function streamTextDefinitionIndex(string filePath) returns [map<string
 
 // Stream the Concept Snapshot and build one SnomedConceptImport per active
 // concept, joining against the pre-built description and text-definition
-// indexes. This is the memory-friendly replacement for
-// parseSnomedConceptFile + assembleSnomedConceptImports on the import hot path.
-// Returns [imports, totalRowsRead].
+// indexes.
 isolated function streamConceptImports(string filePath, map<ConceptDescriptions> descIndex, map<string> defIndex) returns [SnomedConceptImport[], int]|error {
     SnomedConceptImport[] result = [];
     int rowsRead = 0;
@@ -459,9 +442,6 @@ isolated function isHeaderLine(string line) returns boolean {
     return line.startsWith("id\t");
 }
 
-// Truncate a string to the schema's VARCHAR(191) limit so it fits in the
-// concepts.display / concepts.definition columns. The full string is still kept
-// inside the serialized r4:CodeSystemConcept BYTEA, so $lookup returns full text.
 public isolated function truncate191(string? value) returns string? {
     if value is () {
         return ();
@@ -472,9 +452,6 @@ public isolated function truncate191(string? value) returns string? {
     return value.substring(0, DB_STRING_COLUMN_LIMIT);
 }
 
-// Convert an RF2 effectiveTime (yyyyMMdd) to FHIR date (yyyy-MM-dd).
-// Returns empty string on unexpected input so the caller can still satisfy the
-// NOT NULL codesystems.date column.
 public isolated function deriveSnomedDate(string? version) returns string {
     if version is () || version.length() != 8 {
         return "";
@@ -482,8 +459,6 @@ public isolated function deriveSnomedDate(string? version) returns string {
     return version.substring(0, 4) + "-" + version.substring(4, 6) + "-" + version.substring(6, 8);
 }
 
-// Locate an RF2 file under the extracted directory. Real SNOMED releases nest
-// files under Snapshot/Terminology/, so we walk one level of subdirectories.
 public isolated function findRf2File(string dirPath, string prefix) returns string|error {
     string? found = check searchRf2File(dirPath, prefix);
     if found is string {
@@ -504,8 +479,6 @@ isolated function searchRf2File(string dirPath, string prefix) returns string?|e
             return entry.absPath;
         }
     }
-    // Not at this level. Descend one level into any subdirectories (RF2 nests
-    // under Snapshot/Terminology/).
     foreach file:MetaData entry in entries {
         if entry.dir {
             string? nested = check searchRf2File(entry.absPath, prefix);
@@ -522,10 +495,7 @@ isolated function getBaseName(string path) returns string {
     return parts[parts.length() - 1];
 }
 
-// Group parsed RF2 rows into per-concept import records. Only active concepts
-// are emitted; descriptions/definitions from inactive concepts are ignored.
-// display selection order: first active synonym, then FSN, then the concept id
-// (spec's fallback chain).
+// Group parsed RF2 rows into per-concept import records.
 public isolated function assembleSnomedConceptImports(
         SnomedConceptRow[] concepts,
         SnomedDescriptionRow[] descriptions,
@@ -547,7 +517,6 @@ public isolated function assembleSnomedConceptImports(
             continue;
         }
         // If a concept has multiple text definitions we keep the first one seen.
-        // Full text is preserved in the BYTEA payload later.
         if !defByConcept.hasKey(t.conceptId) {
             defByConcept[t.conceptId] = t.term;
         }
@@ -578,12 +547,7 @@ public isolated function assembleSnomedConceptImports(
         }
 
         string display = synonyms.length() > 0 ? synonyms[0] : (fsn ?: c.id);
-
-        // Prefer the active TextDefinition when present. Otherwise fall back to
-        // the FSN so concepts without a text definition still expose something
-        // useful in $lookup — Section 7 of the conformance doc explicitly
-        // allows this ("otherwise nullable or FSN fallback"). If neither exists
-        // the field stays null.
+        
         string? textDef = defByConcept[c.id];
         string? definition = textDef is string ? textDef : fsn;
 
@@ -605,9 +569,7 @@ public isolated function assembleSnomedConceptImports(
     return result;
 }
 
-// Build the SNOMED CodeSystem metadata resource. Intentionally omits concept[]:
-// concepts live in the concepts table, and the BYTEA payload is metadata-only
-// (content = fragment).
+// Build the SNOMED CodeSystem metadata resource
 public isolated function buildSnomedCodeSystemMetadata(string? version) returns r4:CodeSystem {
     string effectiveVersion = version ?: "";
     r4:CodeSystem codeSystem = {
@@ -630,9 +592,6 @@ public isolated function buildSnomedCodeSystemMetadata(string? version) returns 
 }
 
 // Convert a single SnomedConceptImport into a full-fidelity r4:CodeSystemConcept.
-// All designations (FSN + synonyms) and property values are preserved. The
-// resulting resource is what gets serialized into concepts.concept (BYTEA), so
-// $lookup returns the untruncated display/definition text.
 public isolated function snomedConceptImportToR4(SnomedConceptImport item) returns r4:CodeSystemConcept {
     r4:CodeSystemConceptDesignation[] designations = [];
 

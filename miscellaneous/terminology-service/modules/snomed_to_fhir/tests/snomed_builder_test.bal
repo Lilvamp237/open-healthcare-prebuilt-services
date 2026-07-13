@@ -37,7 +37,6 @@ function testAssembleSnomedConceptImportsPicksSynonymAsDisplay() returns error? 
     test:assertEquals(item.synonyms.length(), 1);
     test:assertEquals(item.synonyms[0], "Test concept");
     // No TextDefinition passed, so definition falls back to the FSN
-    // (Section 7 conformance doc rule).
     test:assertEquals(item.definition, "Test concept (finding)");
 }
 
@@ -84,7 +83,6 @@ function testBuildSnomedCodeSystemMetadataHasFragmentContentAndNoConcepts() {
     test:assertEquals(cs.content, r4:CODE_CONTENT_FRAGMENT);
     test:assertEquals(cs.caseSensitive, true);
     test:assertEquals(cs.hierarchyMeaning, r4:CODE_HIERARCHYMEANING_IS_A);
-    // Concepts must NOT be inlined into the metadata resource.
     test:assertEquals(cs.concept, ());
 }
 
@@ -127,8 +125,7 @@ function testBuildParentByChildMapFiltersActiveAndIsA() returns error? {
 
     map<string> parents = buildParentByChildMap(rels);
 
-    // Fixture has: one active is-a (kept), one inactive is-a (dropped), one
-    // active non-is-a (dropped).
+    // Fixture has: one active is-a (kept)
     test:assertEquals(parents.length(), 1);
     test:assertEquals(parents["123456"], "138875005");
 }
@@ -182,17 +179,13 @@ function testStreamSnomedRelationshipsToParentMap() returns error? {
     map<string> parents = result[0];
     int rowsRead = result[1];
 
-    // rowsRead counts every data row, including inactive and non-is-a rows.
     test:assertEquals(rowsRead, 3);
-    // Only the one active is-a row survives into the map.
     test:assertEquals(parents.length(), 1);
     test:assertEquals(parents["123456"], "138875005");
 }
 
 @test:Config {}
 function testBuildParentByChildMapFirstDestinationWins() {
-    // Two active is-a rows for the same child — the first destinationId seen
-    // must win. This documents the POC's "one parent only" simplification.
     SnomedRelationshipRow[] rels = [
         {id: "1", effectiveTime: "20260401", active: "1", moduleId: "m", sourceId: "111", destinationId: "222", relationshipGroup: "0", typeId: SNOMED_IS_A_TYPE_ID, characteristicTypeId: "c", modifierId: "d"},
         {id: "2", effectiveTime: "20260401", active: "1", moduleId: "m", sourceId: "111", destinationId: "333", relationshipGroup: "0", typeId: SNOMED_IS_A_TYPE_ID, characteristicTypeId: "c", modifierId: "d"}
@@ -225,7 +218,6 @@ function testAssembleFsnFallbackForDefinition() {
     SnomedConceptImport[] imports = assembleSnomedConceptImports(concepts, descriptions, textDefinitions);
 
     test:assertEquals(imports.length(), 3);
-    // Order matches concepts input.
     test:assertEquals(imports[0].code, "111");
     test:assertEquals(imports[0].definition, "Concept 111 FSN");
     test:assertEquals(imports[1].code, "222");
@@ -236,7 +228,6 @@ function testAssembleFsnFallbackForDefinition() {
 
 @test:Config {}
 function testSnomedCodeSystemTitleMatchesConformanceDoc() {
-    // Section 7 of the conformance doc calls for "SNOMED Clinical Terms".
     test:assertEquals(SNOMED_CODE_SYSTEM_TITLE, "SNOMED Clinical Terms");
     r4:CodeSystem cs = buildSnomedCodeSystemMetadata("20260401");
     test:assertEquals(cs.title, "SNOMED Clinical Terms");

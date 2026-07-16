@@ -3,6 +3,7 @@
 -- This file is an auto-generated file by Ballerina persistence layer for model.
 -- Please verify the generated scripts and execute them against the target DB server.
 
+DROP TABLE IF EXISTS "concept_closure";
 DROP TABLE IF EXISTS "valueset_compose_include_value_sets";
 DROP TABLE IF EXISTS "valueset_compose_include_concepts";
 DROP TABLE IF EXISTS "valueset_compose_includes";
@@ -80,6 +81,18 @@ CREATE TABLE "valueset_compose_include_value_sets" (
 	PRIMARY KEY("valueSetComposeIncludeValueSetId")
 );
 
+-- SNOMED CT transitive is-a closure. Managed via native SQL (executeNativeSQL /
+-- queryNativeSQL), NOT through the generated persist client, so it has no entry
+-- in persist_types.bal / persist_client.bal.
+CREATE TABLE "concept_closure" (
+	"closureId"  SERIAL,
+	"ancestorConceptId" INT NOT NULL,
+	"descendantConceptId" INT NOT NULL,
+	"depth" INT NOT NULL,
+	"codeSystemId" INT NOT NULL,
+	PRIMARY KEY("closureId")
+);
+
 -- CodeSystem/$lookup, CodeSystem/$subsumes, CodeSystem read-by-id, CodeSystem search
 CREATE INDEX "idx_codesystems_id" ON "codesystems"("id");
 CREATE INDEX "idx_codesystems_url" ON "codesystems"("url");
@@ -110,3 +123,8 @@ CREATE INDEX "idx_vcic_compose_id" ON "valueset_compose_include_concepts"("value
 CREATE INDEX "idx_vcic_concept_id" ON "valueset_compose_include_concepts"("conceptConceptId");
 CREATE INDEX "idx_vcivs_compose_id" ON "valueset_compose_include_value_sets"("valuesetcomposeValueSetComposeIncludeId");
 CREATE INDEX "idx_vcivs_valueset_id" ON "valueset_compose_include_value_sets"("valuesetValueSetId");
+
+-- CodeSystem/$subsumes and hierarchy-based ValueSet/$expand over the SNOMED closure
+CREATE INDEX "idx_closure_ancestor" ON "concept_closure"("codeSystemId", "ancestorConceptId");
+CREATE INDEX "idx_closure_descendant" ON "concept_closure"("codeSystemId", "descendantConceptId");
+CREATE INDEX "idx_closure_pair" ON "concept_closure"("ancestorConceptId", "descendantConceptId");

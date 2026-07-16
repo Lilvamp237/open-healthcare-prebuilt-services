@@ -25,51 +25,6 @@ public const string SNOMED_PUBLISHER = "SNOMED International";
 public const string SNOMED_FSN_TYPE_ID = "900000000000003001";
 public const string SNOMED_SYNONYM_TYPE_ID = "900000000000013009";
 
-public type SnomedConceptRow record {|
-    string id;
-    string effectiveTime;
-    string active;
-    string moduleId;
-    string definitionStatusId;
-|};
-
-public type SnomedDescriptionRow record {|
-    string id;
-    string effectiveTime;
-    string active;
-    string moduleId;
-    string conceptId;
-    string languageCode;
-    string typeId;
-    string term;
-    string caseSignificanceId;
-|};
-
-public type SnomedTextDefinitionRow record {|
-    string id;
-    string effectiveTime;
-    string active;
-    string moduleId;
-    string conceptId;
-    string languageCode;
-    string typeId;
-    string term;
-    string caseSignificanceId;
-|};
-
-public type SnomedRelationshipRow record {|
-    string id;
-    string effectiveTime;
-    string active;
-    string moduleId;
-    string sourceId;
-    string destinationId;
-    string relationshipGroup;
-    string typeId;
-    string characteristicTypeId;
-    string modifierId;
-|};
-
 public type SnomedConceptImport record {|
     string code;
     string display;
@@ -92,7 +47,7 @@ public type SnomedImportSummary record {|
     int descriptionsRead;
     int textDefinitionsRead;
     int relationshipsRead;
-    int parentsLinked;
+    int closureRowsWritten;
 |};
 
 // FHIR SNOMED CodeSystem property URIs. Used when emitting CodeSystemConceptProperty.
@@ -105,9 +60,11 @@ public type SnomedImportSummary record {|
 public type SnomedImportBundle record {|
     r4:CodeSystem codeSystemMetadata;
     SnomedConceptImport[] concepts;
-    //store one parent only for the POC 
-    //Populated from active is-a Relationship rows
-    map<string> parentByChildSctid;
+    // Full multi-parent is-a adjacency: child SCTID -> [parent SCTID, ...],
+    // from active is-a Relationship rows. The DB layer derives the single
+    // primary parent (first element) for concepts.parentConceptId and computes
+    // the transitive closure from the whole map.
+    map<string[]> isaParentsByChild;
     int conceptsRead;
     int descriptionsRead;
     int textDefinitionsRead;

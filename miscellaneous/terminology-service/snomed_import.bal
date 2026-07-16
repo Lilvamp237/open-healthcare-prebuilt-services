@@ -20,11 +20,20 @@ import terminology_service.store_h2;
 import ballerina/http;
 import ballerina/log;
 import ballerina/persist;
+import ballerina/sql;
 import ballerinax/health.fhir.r4;
+import ballerinax/persist.sql as psql;
 
 const int SNOMED_INSERT_BATCH_SIZE = 1000;
 
-const int SNOMED_PARENT_LINK_PROGRESS_INTERVAL = 10000;
+const int SNOMED_CLOSURE_PROGRESS_INTERVAL = 100000;
+
+// One row of the transitive is-a closure, in resolved DB-id space.
+type ClosureRow record {|
+    int ancestor;
+    int descendant;
+    int depth;
+|};
 
 // Import a SNOMED CT RF2 Snapshot from an extracted directory into the DB.
 // Writes one codesystems row (content = fragment, no concepts inlined) and one
@@ -46,10 +55,20 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     }
 
     r4:CodeSystem meta = bundle.codeSystemMetadata;
+    string csUrl = meta.url ?: snomed:SNOMED_SYSTEM_URL;
+    string csVersion = meta.version ?: "";
+
+    // Replace any prior load of the same url+version so re-uploads don't
+    // accumulate duplicate CodeSystem/concepts/closure rows.
+    int replaced = check replacePriorLoads(csUrl, csVersion);
+    if replaced > 0 {
+        log:printInfo(string `SNOMED replace: removed ${replaced} prior load(s) for ${csUrl}|${csVersion}`);
+    }
+
     store_h2:CodeSystemInsert codeSystemInsert = {
         id: meta.id ?: snomed:SNOMED_CODE_SYSTEM_ID,
-        url: meta.url ?: snomed:SNOMED_SYSTEM_URL,
-        version: meta.version ?: "",
+        url: csUrl,
+        version: csVersion,
         name: meta.name ?: snomed:SNOMED_CODE_SYSTEM_NAME,
         title: meta.title ?: snomed:SNOMED_CODE_SYSTEM_TITLE,
         status: meta.status,
@@ -69,7 +88,35 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     }
     int codeSystemId = codeSystemResult[0];
 
-    // Pass 1: insert concepts (parentConceptId left null)
+    // Insert concepts + closure. On any failure, delete the partial load so we
+    // never leave a half-imported CodeSystem behind (cleanup-on-failure).
+    [int, int]|r4:FHIRError loadResult = loadConceptsAndClosure(bundle, codeSystemId);
+    if loadResult is r4:FHIRError {
+        error? cleanup = deleteSnomedCodeSystemCascade(codeSystemId);
+        if cleanup is error {
+            log:printError(string `SNOMED cleanup-on-failure failed for codeSystemId=${codeSystemId}: ${cleanup.message()}`);
+        }
+        return loadResult;
+    }
+
+    return {
+        codeSystemId: codeSystemId.toString(),
+        system: snomed:SNOMED_SYSTEM_URL,
+        version: version ?: "",
+        conceptsRead: bundle.conceptsRead,
+        conceptsImported: loadResult[0],
+        descriptionsRead: bundle.descriptionsRead,
+        textDefinitionsRead: bundle.textDefinitionsRead,
+        relationshipsRead: bundle.relationshipsRead,
+        closureRowsWritten: loadResult[1]
+    };
+}
+
+// Insert all concepts (parentConceptId left NULL) then compute + persist the
+// transitive is-a closure. Returns [conceptsImported, closureRowsWritten].
+// Kept separate from importSnomedToDb so a failure here can be cleaned up as a
+// unit by the caller.
+isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int]|r4:FHIRError {
     int imported = 0;
     map<int> dbIdByCode = {};
     store_h2:ConceptInsert[] batch = [];
@@ -114,20 +161,139 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
         imported += flushedIds.length();
     }
 
-    // Pass 2: link one parent per concept from active is-a relationships
-    int parentsLinked = linkParents(bundle.parentByChildSctid, dbIdByCode);
+    // Transitive is-a closure: a depth-0 self row per concept plus one row per
+    // transitive ancestor that is also in the imported set.
+    int closureRowsWritten = check writeClosure(bundle.isaParentsByChild, dbIdByCode, codeSystemId);
 
-    return {
-        codeSystemId: codeSystemId.toString(),
-        system: snomed:SNOMED_SYSTEM_URL,
-        version: version ?: "",
-        conceptsRead: bundle.conceptsRead,
-        conceptsImported: imported,
-        descriptionsRead: bundle.descriptionsRead,
-        textDefinitionsRead: bundle.textDefinitionsRead,
-        relationshipsRead: bundle.relationshipsRead,
-        parentsLinked: parentsLinked
-    };
+    return [imported, closureRowsWritten];
+}
+
+// Find prior loads for a given url+version and cascade-delete each. Returns the
+// number of prior CodeSystems removed.
+isolated function replacePriorLoads(string url, string 'version) returns int|r4:FHIRError {
+    sql:ParameterizedQuery q = sql:queryConcat(
+            `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
+            ` WHERE `, escapeToQuery("url"), ` = ${url} AND `, escapeToQuery("version"), ` = ${'version}`);
+    stream<record {|int codeSystemId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(q);
+    int[]|error ids = from var row in resultStream
+        select row.codeSystemId;
+    if ids is error {
+        return r4:createFHIRError(
+                "Error while finding existing SNOMED loads: " + ids.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = ids,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+
+    foreach int id in ids {
+        error? del = deleteSnomedCodeSystemCascade(id);
+        if del is error {
+            return r4:createFHIRError(
+                    string `Error while deleting existing SNOMED load codeSystemId=${id}: ${del.message()}`,
+                    r4:ERROR,
+                    r4:INVALID_REQUIRED,
+                    cause = del,
+                    httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+        }
+    }
+    return ids.length();
+}
+
+// Delete a SNOMED CodeSystem and everything scoped to it: closure rows, then
+// concepts, then the codesystems row. concept_closure has no FKs, and SNOMED
+// creates no ValueSet rows referencing these concepts, so this ordering is safe.
+isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
+    sql:ParameterizedQuery delClosure = sql:queryConcat(
+            `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+    _ = check sClient->executeNativeSQL(delClosure);
+
+    sql:ParameterizedQuery delConcepts = sql:queryConcat(
+            `DELETE FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+    _ = check sClient->executeNativeSQL(delConcepts);
+
+    sql:ParameterizedQuery delCodeSystem = sql:queryConcat(
+            `DELETE FROM `, escapeToQuery("codesystems"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+    _ = check sClient->executeNativeSQL(delCodeSystem);
+}
+
+// Compute the transitive is-a closure and insert it into concept_closure in
+// batches. Returns the number of rows written. Ancestors that aren't in the
+// imported set (dbIdByCode) are skipped; self rows are always emitted.
+isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
+    int written = 0;
+    ClosureRow[] batch = [];
+
+    foreach [string, int] [code, childDbId] in dbIdByCode.entries() {
+        // Depth-0 self row: a concept is its own ancestor at depth 0.
+        batch.push({ancestor: childDbId, descendant: childDbId, depth: 0});
+
+        map<int> ancestorDepths = snomed:computeAncestorDepths(code, isaParentsByChild);
+        foreach [string, int] [ancestorSctid, depth] in ancestorDepths.entries() {
+            int? ancestorDbId = dbIdByCode[ancestorSctid];
+            if ancestorDbId is int {
+                batch.push({ancestor: ancestorDbId, descendant: childDbId, depth: depth});
+            }
+        }
+
+        // Flush once we're at/over the batch size. A single concept adds only
+        // its (bounded) ancestor count, so the overshoot past the threshold is
+        // small.
+        if batch.length() >= SNOMED_INSERT_BATCH_SIZE {
+            int|r4:FHIRError flushed = flushClosureBatch(batch, codeSystemId);
+            if flushed is r4:FHIRError {
+                return flushed;
+            }
+            written += flushed;
+            batch = [];
+            if written % SNOMED_CLOSURE_PROGRESS_INTERVAL < SNOMED_INSERT_BATCH_SIZE {
+                log:printInfo(string `SNOMED closure progress: ${written} rows written`);
+            }
+        }
+    }
+
+    if batch.length() > 0 {
+        int|r4:FHIRError flushed = flushClosureBatch(batch, codeSystemId);
+        if flushed is r4:FHIRError {
+            return flushed;
+        }
+        written += flushed;
+    }
+
+    return written;
+}
+
+// Insert a batch of closure rows with a single multi-row INSERT built as one
+// parameterized query. Fragments are assembled into an array and concatenated
+// once (O(n)) to avoid the O(n^2) cost of pairwise queryConcat in a loop.
+isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns int|r4:FHIRError {
+    if rows.length() == 0 {
+        return 0;
+    }
+
+    string head = string `INSERT INTO ${escape("concept_closure")} (${escape("ancestorConceptId")}, ${escape("descendantConceptId")}, ${escape("depth")}, ${escape("codeSystemId")}) VALUES `;
+
+    sql:ParameterizedQuery[] fragments = [stringToParameterizedQuery(head)];
+    boolean first = true;
+    foreach ClosureRow row in rows {
+        if !first {
+            fragments.push(`, `);
+        }
+        fragments.push(`(${row.ancestor}, ${row.descendant}, ${row.depth}, ${codeSystemId})`);
+        first = false;
+    }
+
+    sql:ParameterizedQuery query = sql:queryConcat(...fragments);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while inserting SNOMED closure batch: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+    return rows.length();
 }
 
 // Fire-and-forget wrapper around importSnomedToDb for use from the /$upload handler.
@@ -137,7 +303,7 @@ public isolated function runSnomedImportAsync(string extractedPath, string? vers
     if result is r4:FHIRError {
         log:printError("SNOMED import failed: " + result.message());
     } else {
-        log:printInfo(string `SNOMED import complete: conceptsRead=${result.conceptsRead}, conceptsImported=${result.conceptsImported}, descriptionsRead=${result.descriptionsRead}, textDefinitionsRead=${result.textDefinitionsRead}, relationshipsRead=${result.relationshipsRead}, parentsLinked=${result.parentsLinked}, codeSystemId=${result.codeSystemId}`);
+        log:printInfo(string `SNOMED import complete: conceptsRead=${result.conceptsRead}, conceptsImported=${result.conceptsImported}, descriptionsRead=${result.descriptionsRead}, textDefinitionsRead=${result.textDefinitionsRead}, relationshipsRead=${result.relationshipsRead}, closureRowsWritten=${result.closureRowsWritten}, codeSystemId=${result.codeSystemId}`);
     }
     error? cleanup = removeDirectory(tempDir);
     if cleanup is error {
@@ -170,28 +336,3 @@ isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] i
     }
 }
 
-isolated function linkParents(map<string> parentByChildSctid, map<int> dbIdByCode) returns int {
-    int linked = 0;
-    int skipped = 0;
-    foreach [string, string] [childSctid, parentSctid] in parentByChildSctid.entries() {
-        int? childDbId = dbIdByCode[childSctid];
-        int? parentDbId = dbIdByCode[parentSctid];
-        if childDbId is () || parentDbId is () {
-            skipped += 1;
-            continue;
-        }
-        store_h2:Concept|persist:Error updated = sClient->/concepts/[childDbId].put({parentConceptId: parentDbId});
-        if updated is persist:Error {
-            log:printError(string `SNOMED parent link failed for child=${childSctid}: ${updated.message()}`);
-            continue;
-        }
-        linked += 1;
-        if linked % SNOMED_PARENT_LINK_PROGRESS_INTERVAL == 0 {
-            log:printInfo(string `SNOMED parent linking progress: ${linked} links applied`);
-        }
-    }
-    if skipped > 0 {
-        log:printInfo(string `SNOMED parent linking: ${skipped} entries skipped (parent or child not in imported set)`);
-    }
-    return linked;
-}

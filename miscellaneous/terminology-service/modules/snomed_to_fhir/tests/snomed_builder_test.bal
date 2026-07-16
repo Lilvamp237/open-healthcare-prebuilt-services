@@ -18,29 +18,6 @@ import ballerina/test;
 import ballerinax/health.fhir.r4;
 
 @test:Config {}
-function testAssembleSnomedConceptImportsPicksSynonymAsDisplay() returns error? {
-    SnomedConceptRow[] concepts = check parseSnomedConceptFile(
-        "modules/snomed_to_fhir/tests/resources/sct2_Concept_Snapshot_INT_20260401.txt"
-    );
-    SnomedDescriptionRow[] descriptions = check parseSnomedDescriptionFile(
-        "modules/snomed_to_fhir/tests/resources/sct2_Description_Snapshot-en_INT_20260401.txt"
-    );
-
-    SnomedConceptImport[] imports = assembleSnomedConceptImports(concepts, descriptions, []);
-
-    test:assertEquals(imports.length(), 1);
-    SnomedConceptImport item = imports[0];
-    test:assertEquals(item.code, "123456");
-    // Synonym wins over FSN for display per spec fallback order.
-    test:assertEquals(item.display, "Test concept");
-    test:assertEquals(item.fsn, "Test concept (finding)");
-    test:assertEquals(item.synonyms.length(), 1);
-    test:assertEquals(item.synonyms[0], "Test concept");
-    // No TextDefinition passed, so definition falls back to the FSN
-    test:assertEquals(item.definition, "Test concept (finding)");
-}
-
-@test:Config {}
 function testSnomedConceptImportToR4EmitsDesignationsAndProperties() {
     SnomedConceptImport item = {
         code: "123456",
@@ -103,34 +80,6 @@ function testTruncate191() {
 }
 
 @test:Config {}
-function testParseSnomedRelationshipFile() returns error? {
-    SnomedRelationshipRow[] rels = check parseSnomedRelationshipFile(
-        "modules/snomed_to_fhir/tests/resources/sct2_Relationship_Snapshot_INT_20260401.txt"
-    );
-
-    test:assertEquals(rels.length(), 3);
-    // Column mapping sanity check on the first row.
-    test:assertEquals(rels[0].id, "1000001");
-    test:assertEquals(rels[0].sourceId, "123456");
-    test:assertEquals(rels[0].destinationId, "138875005");
-    test:assertEquals(rels[0].typeId, SNOMED_IS_A_TYPE_ID);
-    test:assertEquals(rels[0].modifierId, "900000000000451002");
-}
-
-@test:Config {}
-function testBuildParentByChildMapFiltersActiveAndIsA() returns error? {
-    SnomedRelationshipRow[] rels = check parseSnomedRelationshipFile(
-        "modules/snomed_to_fhir/tests/resources/sct2_Relationship_Snapshot_INT_20260401.txt"
-    );
-
-    map<string> parents = buildParentByChildMap(rels);
-
-    // Fixture has: one active is-a (kept)
-    test:assertEquals(parents.length(), 1);
-    test:assertEquals(parents["123456"], "138875005");
-}
-
-@test:Config {}
 function testStreamDescriptionIndex() returns error? {
     [map<ConceptDescriptions>, int] result = check streamDescriptionIndex(
         "modules/snomed_to_fhir/tests/resources/sct2_Description_Snapshot-en_INT_20260401.txt"
@@ -170,60 +119,56 @@ function testStreamConceptImportsJoinsDescriptions() returns error? {
 }
 
 @test:Config {}
-function testStreamSnomedRelationshipsToParentMap() returns error? {
-    // Streaming function should produce the same map as the two-step
-    // parseSnomedRelationshipFile + buildParentByChildMap approach.
-    [map<string>, int] result = check streamSnomedRelationshipsToParentMap(
+function testStreamSnomedIsaAdjacency() returns error? {
+    // Streaming should keep only active is-a rows and produce a multi-parent
+    // adjacency. The fixture has one active is-a for 123456, one inactive is-a,
+    // and one active non-is-a; only the first survives.
+    [map<string[]>, int] result = check streamSnomedIsaAdjacency(
         "modules/snomed_to_fhir/tests/resources/sct2_Relationship_Snapshot_INT_20260401.txt"
     );
-    map<string> parents = result[0];
+    map<string[]> adjacency = result[0];
     int rowsRead = result[1];
 
     test:assertEquals(rowsRead, 3);
-    test:assertEquals(parents.length(), 1);
-    test:assertEquals(parents["123456"], "138875005");
+    test:assertEquals(adjacency.length(), 1);
+    string[]? parents = adjacency["123456"];
+    test:assertTrue(parents is string[]);
+    test:assertEquals(<string[]>parents, ["138875005"]);
 }
 
 @test:Config {}
-function testBuildParentByChildMapFirstDestinationWins() {
-    SnomedRelationshipRow[] rels = [
-        {id: "1", effectiveTime: "20260401", active: "1", moduleId: "m", sourceId: "111", destinationId: "222", relationshipGroup: "0", typeId: SNOMED_IS_A_TYPE_ID, characteristicTypeId: "c", modifierId: "d"},
-        {id: "2", effectiveTime: "20260401", active: "1", moduleId: "m", sourceId: "111", destinationId: "333", relationshipGroup: "0", typeId: SNOMED_IS_A_TYPE_ID, characteristicTypeId: "c", modifierId: "d"}
-    ];
+function testComputeAncestorDepths() {
+    // Pure diamond: D is-a B, D is-a C, B is-a A, C is-a A.
+    // Apex A is only reachable at depth 2 (via B or C).
+    map<string[]> diamond = {
+        "D": ["B", "C"],
+        "B": ["A"],
+        "C": ["A"],
+        "A": []
+    };
+    map<int> anc = computeAncestorDepths("D", diamond);
+    test:assertEquals(anc.length(), 3);
+    test:assertEquals(anc["B"], 1);
+    test:assertEquals(anc["C"], 1);
+    test:assertEquals(anc["A"], 2);
+    // Self must be excluded.
+    test:assertTrue(anc["D"] is ());
 
-    map<string> parents = buildParentByChildMap(rels);
+    // Min-depth: Z is reachable directly from X (depth 1) and via Y (depth 2).
+    // The shorter path must win.
+    map<string[]> shortcut = {
+        "X": ["Y", "Z"],
+        "Y": ["Z"],
+        "Z": []
+    };
+    map<int> anc2 = computeAncestorDepths("X", shortcut);
+    test:assertEquals(anc2.length(), 2);
+    test:assertEquals(anc2["Y"], 1);
+    test:assertEquals(anc2["Z"], 1);
 
-    test:assertEquals(parents.length(), 1);
-    test:assertEquals(parents["111"], "222");
-}
-
-@test:Config {}
-function testAssembleFsnFallbackForDefinition() {
-    // Concept 111 has FSN + no TextDefinition -> definition should fall back to FSN.
-    // Concept 222 has FSN + TextDefinition -> TextDefinition wins.
-    // Concept 333 has neither FSN nor TextDefinition -> definition stays null.
-    SnomedConceptRow[] concepts = [
-        {id: "111", effectiveTime: "20260401", active: "1", moduleId: "m", definitionStatusId: "d"},
-        {id: "222", effectiveTime: "20260401", active: "1", moduleId: "m", definitionStatusId: "d"},
-        {id: "333", effectiveTime: "20260401", active: "1", moduleId: "m", definitionStatusId: "d"}
-    ];
-    SnomedDescriptionRow[] descriptions = [
-        {id: "d1", effectiveTime: "20260401", active: "1", moduleId: "m", conceptId: "111", languageCode: "en", typeId: SNOMED_FSN_TYPE_ID, term: "Concept 111 FSN", caseSignificanceId: "c"},
-        {id: "d2", effectiveTime: "20260401", active: "1", moduleId: "m", conceptId: "222", languageCode: "en", typeId: SNOMED_FSN_TYPE_ID, term: "Concept 222 FSN", caseSignificanceId: "c"}
-    ];
-    SnomedTextDefinitionRow[] textDefinitions = [
-        {id: "t1", effectiveTime: "20260401", active: "1", moduleId: "m", conceptId: "222", languageCode: "en", typeId: "900000000000550004", term: "Concept 222 text definition", caseSignificanceId: "c"}
-    ];
-
-    SnomedConceptImport[] imports = assembleSnomedConceptImports(concepts, descriptions, textDefinitions);
-
-    test:assertEquals(imports.length(), 3);
-    test:assertEquals(imports[0].code, "111");
-    test:assertEquals(imports[0].definition, "Concept 111 FSN");
-    test:assertEquals(imports[1].code, "222");
-    test:assertEquals(imports[1].definition, "Concept 222 text definition");
-    test:assertEquals(imports[2].code, "333");
-    test:assertEquals(imports[2].definition, ());
+    // A concept with no parents has no ancestors.
+    map<int> anc3 = computeAncestorDepths("A", diamond);
+    test:assertEquals(anc3.length(), 0);
 }
 
 @test:Config {}
@@ -247,8 +192,8 @@ function testBuildSnomedImportEndToEnd() returns error? {
     test:assertEquals(bundle.concepts.length(), 1);
     test:assertEquals(bundle.concepts[0].code, "123456");
     // The end-to-end fixture has one active is-a row (123456 -> 138875005).
-    test:assertEquals(bundle.parentByChildSctid.length(), 1);
-    test:assertEquals(bundle.parentByChildSctid["123456"], "138875005");
+    test:assertEquals(bundle.isaParentsByChild.length(), 1);
+    test:assertEquals(bundle.isaParentsByChild["123456"], ["138875005"]);
     test:assertEquals(bundle.codeSystemMetadata.version, "20260401");
     test:assertEquals(bundle.codeSystemMetadata.content, r4:CODE_CONTENT_FRAGMENT);
 }

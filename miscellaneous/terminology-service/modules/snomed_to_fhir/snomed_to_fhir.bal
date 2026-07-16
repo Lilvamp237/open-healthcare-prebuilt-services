@@ -46,15 +46,15 @@ public isolated function buildSnomedImport(string dirPath, string? version) retu
     descIndex = {};
     defIndex = {};
 
-    [map<string>, int] parentResult = check streamSnomedRelationshipsToParentMap(relationshipFilePath);
+    [map<string[]>, int] adjacencyResult = check streamSnomedIsaAdjacency(relationshipFilePath);
 
     return {
         codeSystemMetadata: buildSnomedCodeSystemMetadata(version),
         concepts: importRecords,
-        parentByChildSctid: parentResult[0],
+        isaParentsByChild: adjacencyResult[0],
         conceptsRead: conceptsRead,
         descriptionsRead: descriptionsRead,
         textDefinitionsRead: textDefinitionsRead,
-        relationshipsRead: parentResult[1]
+        relationshipsRead: adjacencyResult[1]
     };
 }

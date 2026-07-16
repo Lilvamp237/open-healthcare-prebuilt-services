@@ -465,17 +465,25 @@ public isolated class TerminologySource {
             return {'parameter: [{name: terminology:OUTCOME, valueCode: terminology:EQUIVALENT}]};
         }
 
+        // getConceptNode validates each code exists in this CodeSystem and
+        // yields its DB conceptId.
         ConceptNode conceptA = check getConceptNode(codeA, codeSystem.codeSystemId);
         ConceptNode conceptB = check getConceptNode(codeB, codeSystem.codeSystemId);
 
-        // Check if A is ancestor of B
-        boolean aSubsumesB = isInParentChain(conceptA.conceptId, conceptB);
+        // A subsumes B when A is a transitive ancestor of B. Check the closure
+        // table (SNOMED, whose concepts have NULL parentConceptId) then fall
+        // back to the parentConceptId chain walk (LOINC / generic CodeSystems
+        // loaded via addCodeSystem, which populate parentConceptId rather than
+        // concept_closure). A CodeSystem uses one representation, so OR-ing is
+        // sound.
+        boolean aSubsumesB = closureContainsPair(conceptA.conceptId, conceptB.conceptId, codeSystem.codeSystemId)
+            || isInParentChain(conceptA.conceptId, conceptB);
         if aSubsumesB {
             return {'parameter: [{name: terminology:OUTCOME, valueCode: terminology:SUBSUMED}]};
         }
 
-        // Check if B is ancestor of A
-        boolean bSubsumesA = isInParentChain(conceptB.conceptId, conceptA);
+        boolean bSubsumesA = closureContainsPair(conceptB.conceptId, conceptA.conceptId, codeSystem.codeSystemId)
+            || isInParentChain(conceptB.conceptId, conceptA);
         if bSubsumesA {
             return {'parameter: [{name: terminology:OUTCOME, valueCode: terminology:SUBSUMED_BY}]};
         }
@@ -546,6 +554,29 @@ public isolated class TerminologySource {
     }
 }
 
+// Returns true if a closure row (ancestorConceptId, descendantConceptId) exists
+// for this CodeSystem — i.e. `ancestorId` is a transitive is-a ancestor of
+// `descendantId`. A single indexed lookup against concept_closure, replacing the
+// old parentConceptId chain walk. Mirrors isCodeSystemExist: a query error is
+// treated as "no such relationship" (false).
+isolated function closureContainsPair(int ancestorId, int descendantId, int codeSystemId) returns boolean {
+    sql:ParameterizedQuery sqlQuery = sql:queryConcat(
+            `SELECT 1 FROM `, escapeToQuery("concept_closure"),
+            ` WHERE `, escapeToQuery("ancestorConceptId"), ` = ${ancestorId}`,
+            ` AND `, escapeToQuery("descendantConceptId"), ` = ${descendantId}`,
+            ` AND `, escapeToQuery("codeSystemId"), ` = ${codeSystemId} LIMIT 1`);
+
+    stream<record {}, persist:Error?> resultStream = sClient->queryNativeSQL(sqlQuery);
+    record {}[]|error results = from record {} result in resultStream
+        select result;
+
+    return results is error ? false : results.length() > 0;
+}
+
+// Walk the parentConceptId chain of `currentNode` looking for `targetAncestorId`.
+// Used as the subsumption fallback for CodeSystems that store hierarchy in
+// concepts.parentConceptId (LOINC / generic) rather than concept_closure
+// (SNOMED). Returns false for SNOMED concepts, whose parentConceptId is NULL.
 isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode) returns boolean {
     int? parentId = currentNode.parentConceptId;
 

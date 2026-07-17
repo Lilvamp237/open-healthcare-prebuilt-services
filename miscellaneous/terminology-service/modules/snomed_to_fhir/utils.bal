@@ -34,10 +34,6 @@ public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
 // Parse the RF2 Relationship Snapshot and build the full multi-parent is-a
 // adjacency (child SCTID -> [parent SCTID, ...]) in one streaming pass.
-// SNOMED is a polyhierarchy, so a child can have several is-a parents; all of
-// them are kept (unlike the earlier one-parent map). Parent order follows RF2
-// file order, so the first element is the deterministic "primary" parent used
-// for concepts.parentConceptId.
 public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, int]|error {
     map<string[]> parentsByChild = {};
     int rowsRead = 0;
@@ -50,9 +46,6 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
             string[] cols = regex:split(line, "\\t");
             if cols.length() >= RELATIONSHIP_COLUMN_COUNT {
                 rowsRead += 1;
-                // Only four columns matter: active (2), sourceId (4),
-                // destinationId (5), typeId (7). Rows failing either filter are
-                // dropped without ever building a record.
                 if cols[2] == "1" && cols[7] == SNOMED_IS_A_TYPE_ID {
                     string sourceId = cols[4];
                     string[] parents = parentsByChild[sourceId] ?: [];

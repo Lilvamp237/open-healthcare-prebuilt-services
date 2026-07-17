@@ -80,9 +80,7 @@ CREATE TABLE "valueset_compose_include_value_sets" (
 	PRIMARY KEY("valueSetComposeIncludeValueSetId")
 );
 
--- SNOMED CT transitive is-a closure. Managed via native SQL (executeNativeSQL /
--- queryNativeSQL), NOT through the generated persist client, so it has no entry
--- in persist_types.bal / persist_client.bal.
+-- SNOMED CT transitive is-a closure.
 CREATE TABLE "concept_closure" (
 	"closureId"  SERIAL,
 	"ancestorConceptId" INT NOT NULL,

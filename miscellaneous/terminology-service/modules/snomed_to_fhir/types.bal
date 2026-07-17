@@ -61,9 +61,7 @@ public type SnomedImportBundle record {|
     r4:CodeSystem codeSystemMetadata;
     SnomedConceptImport[] concepts;
     // Full multi-parent is-a adjacency: child SCTID -> [parent SCTID, ...],
-    // from active is-a Relationship rows. The DB layer derives the single
-    // primary parent (first element) for concepts.parentConceptId and computes
-    // the transitive closure from the whole map.
+    // from active is-a Relationship rows.
     map<string[]> isaParentsByChild;
     int conceptsRead;
     int descriptionsRead;

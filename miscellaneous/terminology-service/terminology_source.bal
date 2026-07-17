@@ -431,6 +431,34 @@ public isolated class TerminologySource {
             }
         }
 
+        // Intensional includes: resolve `concept is-a` / `descendent-of`
+        // filters against the closure table. The filter rule lives in the
+        // stored ValueSet resource — it is not persisted in the include flag
+        // tables — so read it from the stored resource here.
+        r4:ValueSet|error storedVs = byteToValueSet(dbValueSet.valueSet);
+        if storedVs is r4:ValueSet {
+            r4:ValueSetCompose? composeRules = storedVs.compose;
+            if composeRules is r4:ValueSetCompose {
+                foreach r4:ValueSetComposeInclude inc in composeRules.include {
+                    r4:ValueSetComposeIncludeFilter[]? incFilters = inc.filter;
+                    r4:uri? incSystem = inc.system;
+                    if incFilters is r4:ValueSetComposeIncludeFilter[] && incSystem is r4:uri {
+                        store_h2:CodeSystem|error filterCs = getStoreCodeSystemByURL(incSystem, inc.'version);
+                        if filterCs is store_h2:CodeSystem {
+                            foreach r4:ValueSetComposeIncludeFilter f in incFilters {
+                                if f.property == "concept" && (f.op == "is-a" || f.op == "descendent-of") {
+                                    r4:ValueSetExpansionContains[] members = closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
+                                    foreach r4:ValueSetExpansionContains m in members {
+                                        allConcepts.push(m);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Pagination
         int totalCount = allConcepts.length();
         r4:ValueSetExpansionContains[] pagedConcepts;
@@ -571,6 +599,45 @@ isolated function closureContainsPair(int ancestorId, int descendantId, int code
         select result;
 
     return results is error ? false : results.length() > 0;
+}
+
+// Resolve an intensional `concept is-a` / `descendent-of` filter to its members
+// via the closure table: every descendant of `anchorCode` in this CodeSystem.
+isolated function closureMembers(int codeSystemId, string anchorCode, boolean includeSelf, string? textFilter) returns r4:ValueSetExpansionContains[] {
+    r4:ValueSetExpansionContains[] members = [];
+
+    store_h2:Concept|r4:FHIRError anchor = getStoreConceptByCode(codeSystemId, anchorCode);
+    if anchor is r4:FHIRError {
+        return members;
+    }
+
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT c.* FROM `, escapeToQuery("concepts"), ` c JOIN `, escapeToQuery("concept_closure"), ` cc ON c.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
+            ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${anchor.conceptId}`,
+            ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
+            includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`)
+    );
+
+    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
+    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+        select c;
+    if dbConcepts is error {
+        return members;
+    }
+
+    foreach store_h2:Concept c in dbConcepts {
+        r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
+        if concept is r4:CodeSystemConcept {
+            if textFilter is string {
+                if concept.display is string && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
+                    continue;
+                }
+            }
+            members.push({code: concept.code, display: concept.display, id: concept.id});
+        }
+    }
+
+    return members;
 }
 
 // Walk the parentConceptId chain of `currentNode` looking for `targetAncestorId`.
@@ -1030,8 +1097,17 @@ isolated function saveValueSetComposeInclude(r4:ValueSetComposeInclude include, 
                 // save valueset concept
                 _ = start saveValueSetConcept(item.clone(), valueSetId, codesystem.codeSystemId);
             }
-            
+
         } else {
+            // An intensional include (system + filter, no listed concepts) is
+            // NOT a whole-system include. Its membership is resolved at $expand
+            // time from the stored ValueSet resource against concept_closure, so
+            // do not store it as a systemFlag row (which would expand to the
+            // entire CodeSystem).
+            r4:ValueSetComposeIncludeFilter[]? filters = include.filter;
+            if filters is r4:ValueSetComposeIncludeFilter[] && filters.length() > 0 {
+                return;
+            }
             // save valueset code system
             _ = start saveValueSetCodeSystem(valueSetId, codesystem.codeSystemId);
         }

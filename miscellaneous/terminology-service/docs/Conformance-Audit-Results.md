@@ -406,26 +406,25 @@ Third verification layer — answers "are we mapping the **right source column t
 the right FHIR field**?", which neither validator pass can judge. Method:
 `$lookup` the same code on a reference server and diff field-by-field.
 
-- SNOMED `73211009` — ours vs **Ontoserver** (`r4.ontoserver.csiro.au`).
+- SNOMED `73211009` — ours vs **tx.fhir.org** (SNOMED **International core**,
+  module `900000000000207008`, version `20250201` — same edition we imported).
+  Also cross-checked against Ontoserver, but that resolved the **Australian
+  extension** (`…/20260630`), which confounded display/definition — tx.fhir.org
+  is the clean reference and is used below.
 - LOINC `100011-6` — ours vs **tx.fhir.org**.
 
-> **Caveat (SNOMED):** Ontoserver resolved `73211009` against the SNOMED
-> **Australian extension** (`…/20260630`), not International `20260401`. So
-> display/definition differences are partly edition artefacts, not our bugs. The
-> property/structure comparison still holds.
-
-## SNOMED — ours vs Ontoserver
+## SNOMED — ours vs tx.fhir.org (International)
 
 | Field | Ours | Reference | Assessment |
 |---|---|---|---|
-| `display` | "Diabetes mellitus" | "Diabetes" | inconclusive — different edition |
+| `display` | "Diabetes mellitus" | "Diabetes mellitus" | **match — display mapping verified ✓** |
 | `definition` | "Diabetes mellitus (disorder)" (FSN fallback) | (none) | **M-def**: we emit FSN-as-definition; reference emits none |
 | active status | `active` → empty `part:[]` (S1) | `inactive` = false (boolean) | **M1**: wrong property name + form |
 | definition status | `definitionStatusId` = "900000000000074008" | `sufficientlyDefined` = false (boolean) | **M1**: wrong property name + form |
-| `moduleId` | valueString | valueCode | **M5**: wrong type (should be code) |
-| `effectiveTime` | "20020131" | "20020131" | match |
-| hierarchy | (none) | `parent`/`child` properties | **M3**: not emitted |
-| designations | FSN + 2 synonyms | + `preferredForLanguage` marks | **M4**: no PT marking (Language Refset) |
+| module | `moduleId` = "…207008" as valueString | `module` = "…207008" as valueCode | **M1/M5**: wrong property name + type |
+| `effectiveTime` | `valueString` "20020131" | `valueDateTime` "2002-01-31" | **M5**: wrong type (string vs dateTime) **and** raw RF2 format, not ISO |
+| hierarchy | (none) | `parent`/`child` (+ attribute rels e.g. finding-site) | **M3**: not emitted |
+| designations | FSN + 2 synonyms | + inactive synonym; PT via `preferredForLanguage` | **M4**: no PT marking (Language Refset) |
 
 ## LOINC — ours vs tx.fhir.org
 
@@ -447,21 +446,24 @@ the right FHIR field**?", which neither validator pass can judge. Method:
 | M2 | high | LOINC axis properties emitted as display strings, not LOINC Part codes; `COMPONENT` missing | LOINC |
 | M3 | med | Hierarchy `parent`/`child` properties not emitted (data exists in closure) | SNOMED (LOINC n/a) |
 | M4 | med | Designations: none for LOINC; SNOMED has no `preferredForLanguage` marking (Language Refset) | both |
-| M5 | low | Coded property values typed as `valueString` instead of `valueCode`/`valueBoolean` | both |
+| M5 | low | Coded/typed property values wrong type: `valueString` instead of `valueCode`/`valueBoolean`/`valueDateTime`. Incl. `effectiveTime` as raw RF2 string "20020131" instead of dateTime "2002-01-31" | both |
 | M6 | low | Raw source columns dumped as properties instead of a curated set | LOINC |
 | M-def | low | SNOMED `definition` populated from FSN fallback where reference emits none | SNOMED |
 
 ## What this verified (positives)
 
+- **SNOMED `display` mapping is correct** — matches tx.fhir.org International
+  exactly ("Diabetes mellitus"). (The Ontoserver "Diabetes" difference was the
+  Australian edition, not our bug.)
 - **LOINC `display` mapping is correct** (`LONG_COMMON_NAME → display`, exact match).
-- SNOMED `moduleId` and `effectiveTime` **values** match (types aside).
+- SNOMED `module` and `effectiveTime` **values** match (types/format aside).
 - Several LOINC properties (ORDER_OBS, UNITSREQUIRED, STATUS, RELATEDNAMES2) match.
 
 ## Method caveats
 - One reference concept per system is enough to check the *logic* (same for all
   concepts); spot-check 1–2 more if time allows.
-- SNOMED display/definition comparison is confounded by Ontoserver's edition —
-  re-run forcing International, or compare against `tx.fhir.org` SNOMED, for a
-  clean display check.
+- Use **tx.fhir.org** as the SNOMED reference — it resolves the International
+  core module (same edition we import). Ontoserver defaults to the Australian
+  extension, which confounds display/definition.
 - Reference servers are exhaustive; a *missing* property on our side is a gap,
   a *wrong-valued* one is a defect.

@@ -1,0 +1,86 @@
+// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import ballerina/http;
+import ballerinax/health.fhir.r4;
+import ballerinax/health.fhir.r4.parser;
+
+// ---------------------------------------------------------------------------
+// TEMPORARY SHIM (branch: api-conformance).
+//
+// The fhirr4 listener validates every operation parameter against the standard
+// FHIR OperationDefinition and rejects any parameter that is not declared there
+// with HTTP 400 ("Unknown parameter ... for operation ...").
+//
+// The HL7 tx-ecosystem test runner (validator_cli txTests) attaches a "uuid"
+// correlation parameter to *every* $expand/$validate-code/$lookup/$subsumes
+// request (see parameters-default.json in the test package). Because "uuid" is
+// not part of the standard OperationDefinitions, the framework rejected every
+// test request with 400 before it ever reached the service handlers -- which is
+// why the whole suite failed on "Response Code fail: should be '2xx'".
+//
+// Attaching this pre-processor to an operation makes the framework hand parameter
+// handling to us instead of doing its strict built-in validation, so unknown
+// parameters (uuid, and any future correlation params) are tolerated:
+//   * GET  -> pass the raw query parameters through as operation search params.
+//   * POST -> parse the Parameters/Bundle payload and hand it back unchanged.
+// The service handlers (and filterSupportedExpansionParams) then take only the
+// parameters they actually understand.
+//
+// Remove this shim once the server natively tolerates unknown operation
+// parameters, or once the parameters are declared in the OperationDefinitions.
+// ---------------------------------------------------------------------------
+isolated function lenientOperationPreProcessor(r4:FHIROperationDefinition definition, string resourceType,
+        map<string[]?>? requestQueryParams, json|xml? payload)
+        returns map<r4:RequestSearchParameter[]>|r4:FHIRResourceEntity|r4:FHIRError? {
+
+    // POST invocation: a payload is present. Parse it and wrap it, skipping the
+    // strict per-parameter validation the framework would otherwise perform.
+    if payload != () {
+        anydata|r4:FHIRParseError parsed = parser:parse(payload);
+        if parsed is r4:FHIRParseError {
+            return r4:createFHIRError(
+                    "Invalid operation payload",
+                    r4:ERROR,
+                    r4:PROCESSING,
+                    diagnostic = "Payload must be a valid FHIR Parameters or Bundle resource.",
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+        return new r4:FHIRResourceEntity(parsed);
+    }
+
+    // GET invocation: build operation search parameters straight from the query
+    // string without rejecting parameters the OperationDefinition does not list.
+    map<r4:RequestSearchParameter[]> operationSearchParams = {};
+    if requestQueryParams is map<string[]?> {
+        foreach var [name, values] in requestQueryParams.entries() {
+            if values is () {
+                continue;
+            }
+            r4:RequestSearchParameter[] searchParams = [];
+            foreach string value in values {
+                searchParams.push({
+                    name: name,
+                    value: value,
+                    'type: r4:STRING,
+                    typedValue: {modifier: ()}
+                });
+            }
+            operationSearchParams[name] = searchParams;
+        }
+    }
+    return operationSearchParams;
+}

@@ -197,6 +197,9 @@ final r4:ResourceAPIConfig valueSetApiConfig = {
         {
             name: "expand",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -332,6 +335,9 @@ final r4:ResourceAPIConfig valueSetApiConfig = {
         {
             name: "validate-code",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -597,6 +603,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "lookup",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -652,6 +661,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "validate-code",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -722,6 +734,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "subsumes",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [

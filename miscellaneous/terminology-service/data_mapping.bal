@@ -106,8 +106,12 @@ isolated function codeSystemToByte(r4:CodeSystem codeSystem) returns byte[]|r4:F
     // Concepts are stripped here because they are stored separately in the concepts table.
     // The incoming CodeSystem is already validated by fhirr4:Listener, so no round-trip
     // re-parse is needed.
+    // NOTE: the optional 'concept' field must be REMOVED, not set to (). Assigning ()
+    // serializes as "concept":null, and the strict parser used by byteToCodeSystem rejects
+    // null for the CodeSystemConcept[] field on read ("found '()'"), so every POST-created
+    // CodeSystem became unreadable (breaking lookup/expand/read for it).
     r4:CodeSystem codeSystemWithoutConcepts = codeSystem.clone();
-    codeSystemWithoutConcepts.concept = ();
+    _ = codeSystemWithoutConcepts.removeIfHasKey("concept");
     return codeSystemWithoutConcepts.toJsonString().toBytes();
 }
 
@@ -119,9 +123,11 @@ isolated function byteToCodeSystem(byte[] byteArray) returns r4:CodeSystem|error
 }
 
 isolated function conceptToByte(r4:CodeSystemConcept concept) returns byte[]|r4:FHIRError {
+    // Same bug as codeSystemToByte: assigning () serializes as "concept":null, which
+    // the strict parser in byteToConcept rejects on read (ConversionError -> the concept
+    // becomes invisible to $lookup/$expand). Remove the field instead.
     r4:CodeSystemConcept conceptWithoutInternlConcept = concept.clone();
-    conceptWithoutInternlConcept.concept = ();
-
+    _ = conceptWithoutInternlConcept.removeIfHasKey("concept");
     return conceptWithoutInternlConcept.toJsonString().toBytes();
 }
 

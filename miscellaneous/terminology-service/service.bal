@@ -266,6 +266,35 @@ service http:InterceptableService /fhir/r4/\$find\-code on baseListener {
     }
 }
 
+// TEMPORARY (branch: api-conformance): the HL7 validator probes GET [base]/$versions
+// on connect to discover which FHIR versions the server supports. The terminology
+// service did not expose it (returned 404 "Path not found: /$versions"), which the
+// validator logs as "Unable to interpret response from $versions". This endpoint
+// returns the standard Parameters response declaring FHIR R4 (4.0.1) support.
+service http:InterceptableService /fhir/r4/\$versions on baseListener {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function get .(http:RequestContext ctx, http:Request request) returns http:Response {
+        log:printDebug("FHIR Terminology request is received. Interaction: $versions");
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setHeader("content-type", "application/fhir+json");
+        json versions = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "version", "valueCode": "4.0.1"},
+                {"name": "default", "valueCode": "4.0.1"}
+            ]
+        };
+        response.setJsonPayload(versions);
+        return response;
+    }
+}
+
 service http:InterceptableService /fhir/r4/metadata on baseListener {
 
     public function createInterceptors() returns [FHIRResponseErrorInterceptor] {

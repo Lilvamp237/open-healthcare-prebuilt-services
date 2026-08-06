@@ -258,10 +258,22 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
     }
 
     r4:CodeSystemConcept[]|r4:CodeSystemConcept result;
+    r4:CodeSystem? cs = ();
 
+    //if id is string {
+        //result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = (check readCodeSystemById(id)).url, version = 'version, terminology = terminology_source);
+    //} else if system is string {
+        //result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = system, version = 'version, terminology = terminology_source);
+    
     if id is string {
-        result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = (check readCodeSystemById(id)).url, version = 'version, terminology = terminology_source);
+        r4:CodeSystem resolvedCs = check readCodeSystemById(id);
+        cs = resolvedCs;
+        result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = resolvedCs.url ?: "", version = 'version, terminology = terminology_source);
     } else if system is string {
+        r4:CodeSystem|r4:FHIRError csResult = readCodeSystemByUrl(system);
+        if csResult is r4:CodeSystem {
+            cs = csResult;
+        }
         result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = system, version = 'version, terminology = terminology_source);
     } else {
         return r4:createFHIRError(
@@ -271,7 +283,19 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
                 httpStatusCode = http:STATUS_BAD_REQUEST);
     }
 
-    return codesystemConceptsToParameters(result);
+    r4:CodeSystemConcept? parentConcept = ();
+    r4:CodeSystemConcept[] childConcepts = [];
+    if cs is r4:CodeSystem && cs.url is r4:uri {
+        [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+                getConceptHierarchy(<r4:uri>cs.url, <r4:code>codeValue, 'version);
+        parentConcept = hierarchy[0];
+        childConcepts = hierarchy[1];
+    }
+
+    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts);
+    //return codesystemConceptsToParameters(result, cs);
+    //return codesystemConceptsToParameters(result);
+
 }
 
 public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
@@ -279,6 +303,7 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
     r4:uri? system = ();
     r4:code? code = ();
     string? 'version = ();
+    r4:CodeSystem? cs = ();
 
     r4:Parameters|error typedParams = parameters.toJson().cloneWithType(r4:Parameters);
     if typedParams is error {
@@ -316,20 +341,40 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
     }
 
     r4:CodeSystemConcept[]|r4:CodeSystemConcept result;
+    r4:code? effectiveCode = ();
     if codingValue is r4:Coding && system is string {
         result = check terminology:codeSystemLookUp(codingValue, system = system, version = 'version, terminology = terminology_source);
+        effectiveCode = codingValue.code;
     } else if code is r4:code && system is string {
         result = check terminology:codeSystemLookUp(code, system = system, version = 'version, terminology = terminology_source);
+        effectiveCode = code;
     } else {
         return r4:createFHIRError(
-                "Can not find a CodeSystem",
-                r4:ERROR,
-                r4:INVALID_REQUIRED,
-                diagnostic = "Provide either a 'coding' parameter or 'system' and 'code' parameters",
-                httpStatusCode = http:STATUS_BAD_REQUEST);
+            "Can not find a CodeSystem",
+            r4:ERROR,
+            r4:INVALID_REQUIRED,
+            diagnostic = "Provide either a 'coding' parameter or 'system' and 'code' parameters",
+            httpStatusCode = http:STATUS_BAD_REQUEST);
     }
 
-    return codesystemConceptsToParameters(result);
+
+    if system is r4:uri {
+        r4:CodeSystem|r4:FHIRError csResult = readCodeSystemByUrl(system);
+        if csResult is r4:CodeSystem {
+            cs = csResult;
+        }
+    }
+
+    r4:CodeSystemConcept? parentConcept = ();
+    r4:CodeSystemConcept[] childConcepts = [];
+    if system is r4:uri && effectiveCode is r4:code {
+        [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+                getConceptHierarchy(system, effectiveCode, 'version);
+        parentConcept = hierarchy[0];
+        childConcepts = hierarchy[1];
+    }
+
+    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts);
 }
 
 public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {

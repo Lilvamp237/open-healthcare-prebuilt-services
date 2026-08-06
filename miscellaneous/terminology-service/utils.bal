@@ -134,15 +134,36 @@ isolated function codeSystemConceptPropertyToParameter(r4:CodeSystemConceptPrope
             {name: "code", valueCode: property.code},
             {name: "value", valueString: property.valueString}
         );
-    }
-
-    if property.valueCoding is r4:Coding {
+    } else if property.valueCoding is r4:Coding {
         part.push(
             {name: "code", valueCode: property.code},
             {name: "value", valueCoding: property.valueCoding}
         );
+    } else if property.valueCode is r4:code {
+        part.push(
+            {name: "code", valueCode: property.code},
+            {name: "value", valueCode: property.valueCode}
+        );
+    } else if property.valueBoolean is boolean {
+        part.push(
+            {name: "code", valueCode: property.code},
+            {name: "value", valueBoolean: property.valueBoolean}
+        );
+    } else if property.valueInteger is int {
+        part.push(
+            {name: "code", valueCode: property.code},
+            {name: "value", valueInteger: property.valueInteger}
+        );
+    } else if property.valueDecimal is decimal {
+        part.push(
+            {name: "code", valueCode: property.code},
+            {name: "value", valueDecimal: property.valueDecimal}
+        );
     }
-    param.part = part;
+
+    if part.length() > 0 {
+        param.part = part;
+    }
 
     return param;
 }

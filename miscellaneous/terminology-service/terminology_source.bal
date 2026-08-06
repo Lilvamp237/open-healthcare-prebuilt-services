@@ -954,6 +954,65 @@ isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns 
     return getStoreConcept(sql:queryConcat(`SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("code"), ` = ${code} AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`));
 }
 
+// Fetch a concept's direct parent (via parentConceptId FK) and direct children
+// (concepts whose parentConceptId points at this concept). Used to emit `parent`
+// and `child` property entries in $lookup responses.
+//
+// Returns [parent, children] — parent is nil if the concept is a root, children
+// is an empty array if the concept has no descendants. Any DB failure returns
+// [(), []] so the caller can still emit a flat lookup response.
+isolated function getConceptHierarchy(r4:uri system, r4:code code, string? version = ())
+        returns [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] {
+    store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
+    if storeCs is error {
+        return [(), []];
+    }
+    int csId = storeCs.codeSystemId;
+
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(csId, code);
+    if storeConcept is r4:FHIRError {
+        return [(), []];
+    }
+
+    // Parent lookup — walk the parentConceptId FK if set
+    r4:CodeSystemConcept? parent = ();
+    int? parentId = storeConcept.parentConceptId;
+    if parentId is int {
+        sql:ParameterizedQuery parentQuery = sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("conceptId"), ` = ${parentId}`);
+        store_h2:Concept|r4:FHIRError storeParent = getStoreConcept(parentQuery);
+        if storeParent is store_h2:Concept {
+            r4:CodeSystemConcept|error parentConcept = byteToConcept(storeParent.concept);
+            if parentConcept is r4:CodeSystemConcept {
+                parent = parentConcept;
+            }
+        }
+    }
+
+    // Children lookup — anyone whose parentConceptId points at us
+    r4:CodeSystemConcept[] children = [];
+    int myConceptId = storeConcept.conceptId;
+    sql:ParameterizedQuery childQuery = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("concepts"),
+            ` WHERE `, escapeToQuery("parentConceptId"), ` = ${myConceptId}`,
+            ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${csId}`,
+            ` ORDER BY `, escapeToQuery("code"));
+    stream<store_h2:Concept, persist:Error?> childStream = sClient->queryNativeSQL(childQuery);
+    store_h2:Concept[]|error childArr = streamToStoreConcept(childStream);
+    if childArr is store_h2:Concept[] {
+        foreach var child in childArr {
+            r4:CodeSystemConcept|error childConcept = byteToConcept(child.concept);
+            if childConcept is r4:CodeSystemConcept {
+                children.push(childConcept);
+            }
+        }
+    }
+
+    return [parent, children];
+}
+
+
 isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store_h2:Concept|r4:FHIRError {
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(sqlQuery);
     store_h2:Concept[]|error dbConcepts = streamToStoreConcept(conceptStream);

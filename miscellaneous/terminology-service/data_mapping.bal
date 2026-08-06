@@ -21,15 +21,75 @@ import ballerina/sql;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.parser;
 
-isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts) returns r4:Parameters {
+isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts, r4:CodeSystem? cs = (), r4:CodeSystemConcept? parentConcept = (), r4:CodeSystemConcept[] childConcepts = []) returns r4:Parameters {
+    string csName = "";
+    if cs is r4:CodeSystem {
+        csName = cs.name ?: (cs.url ?: "");
+    }
     r4:Parameters parameters = {};
     if concepts is r4:CodeSystemConcept {
         parameters = {
             'parameter: [
-                {name: "name", valueString: concepts.code},
-                {name: "display", valueString: concepts.display}
+                {name: "name", valueString: csName},
+                {name: "display", valueString: concepts.display},
+                {name: "code", valueCode: concepts.code}
             ]
         };
+        if cs is r4:CodeSystem && cs.url is r4:uri {
+            (<r4:ParametersParameter[]>parameters.'parameter).push({name: "system", valueUri: <r4:uri>cs.url});
+        }
+        if cs is r4:CodeSystem && cs.version is string {
+            (<r4:ParametersParameter[]>parameters.'parameter).push({name: "version", valueString: <string>cs.version});
+        }
+
+        boolean isAbstract = false;
+        if concepts.property is r4:CodeSystemConceptProperty[] {
+            foreach var prop in <r4:CodeSystemConceptProperty[]>concepts.property {
+                if (prop.code == "notSelectable" || prop.code == "abstract")
+                        && prop.valueBoolean is boolean && <boolean>prop.valueBoolean {
+                    isAbstract = true;
+                    break;
+                }
+            }
+        }
+        (<r4:ParametersParameter[]>parameters.'parameter).push({name: "abstract", valueBoolean: isAbstract});
+
+        boolean hasExplicitInactive = false;
+        if concepts.property is r4:CodeSystemConceptProperty[] {
+            foreach var prop in <r4:CodeSystemConceptProperty[]>concepts.property {
+                if prop.code == "inactive" {
+                    hasExplicitInactive = true;
+                    break;
+                }
+            }
+        }
+        if !hasExplicitInactive {
+            (<r4:ParametersParameter[]>parameters.'parameter).push({
+                name: "property",
+                part: [
+                    {name: "code", valueCode: "inactive"},
+                    {name: "value", valueBoolean: false}
+                ]
+            });
+        }
+
+        if parentConcept is r4:CodeSystemConcept {
+            r4:ParametersParameter[] parentPart = [{name: "code", valueCode: "parent"}];
+            if parentConcept.display is string {
+                parentPart.push({name: "description", valueString: <string>parentConcept.display});
+            }
+            parentPart.push({name: "value", valueCode: parentConcept.code});
+            (<r4:ParametersParameter[]>parameters.'parameter).push({name: "property", part: parentPart});
+        }
+
+        foreach var child in childConcepts {
+            r4:ParametersParameter[] childPart = [{name: "code", valueCode: "child"}];
+            if child.display is string {
+                childPart.push({name: "description", valueString: <string>child.display});
+            }
+            childPart.push({name: "value", valueCode: child.code});
+            (<r4:ParametersParameter[]>parameters.'parameter).push({name: "property", part: childPart});
+        }
 
         if concepts.definition is string {
             (<r4:ParametersParameter[]>parameters.'parameter).push({name: "definition", valueString: concepts.definition});
@@ -51,8 +111,65 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
     } else {
         r4:ParametersParameter[] p = [];
         foreach r4:CodeSystemConcept item in concepts {
-            p.push({name: "name", valueString: item.code},
-                    {name: "display", valueString: item.display});
+            p.push({name: "name", valueString: csName},
+                    {name: "display", valueString: item.display},
+                    {name: "code", valueCode: item.code});
+            if cs is r4:CodeSystem && cs.url is r4:uri {
+                p.push({name: "system", valueUri: <r4:uri>cs.url});
+            }
+            if cs is r4:CodeSystem && cs.version is string {
+                p.push({name: "version", valueString: <string>cs.version});
+            }
+            boolean isAbstract = false;
+            if item.property is r4:CodeSystemConceptProperty[] {
+                foreach var prop in <r4:CodeSystemConceptProperty[]>item.property {
+                    if (prop.code == "notSelectable" || prop.code == "abstract")
+                            && prop.valueBoolean is boolean && <boolean>prop.valueBoolean {
+                        isAbstract = true;
+                        break;
+                    }
+                }
+            }
+            p.push({name: "abstract", valueBoolean: isAbstract});
+
+            boolean hasExplicitInactive = false;
+            if item.property is r4:CodeSystemConceptProperty[] {
+                foreach var prop in <r4:CodeSystemConceptProperty[]>item.property {
+                    if prop.code == "inactive" {
+                        hasExplicitInactive = true;
+                        break;
+                    }
+                }
+            }
+            if !hasExplicitInactive {
+                p.push({
+                    name: "property",
+                    part: [
+                        {name: "code", valueCode: "inactive"},
+                        {name: "value", valueBoolean: false}
+                    ]
+                });
+            }
+
+            if parentConcept is r4:CodeSystemConcept {
+                r4:ParametersParameter[] parentPart = [{name: "code", valueCode: "parent"}];
+                if parentConcept.display is string {
+                    parentPart.push({name: "description", valueString: <string>parentConcept.display});
+                }
+                parentPart.push({name: "value", valueCode: parentConcept.code});
+                (<r4:ParametersParameter[]>p).push({name: "property", part: parentPart});
+            }
+
+            foreach var child in childConcepts {
+                r4:ParametersParameter[] childPart = [{name: "code", valueCode: "child"}];
+                if child.display is string {
+                    childPart.push({name: "description", valueString: <string>child.display});
+                }
+                childPart.push({name: "value", valueCode: child.code});
+                (<r4:ParametersParameter[]>p).push({name: "property", part: childPart});
+            }
+
+
 
             if item.definition is string {
                 p.push({name: "definition", valueString: item.definition});
@@ -74,6 +191,12 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
         }
         parameters = {'parameter: p};
     }
+    r4:ParametersParameter[] finalParams = <r4:ParametersParameter[]>parameters.'parameter;
+    r4:ParametersParameter[] sorted = from var p in finalParams
+        order by p.name ascending
+        select p;
+    parameters = {'parameter: sorted};
+
     return parameters;
 }
 

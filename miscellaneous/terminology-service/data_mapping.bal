@@ -55,11 +55,17 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
         (<r4:ParametersParameter[]>parameters.'parameter).push({name: "abstract", valueBoolean: isAbstract});
 
         boolean hasExplicitInactive = false;
+        boolean derivedInactive = false;
         if concepts.property is r4:CodeSystemConceptProperty[] {
             foreach var prop in <r4:CodeSystemConceptProperty[]>concepts.property {
                 if prop.code == "inactive" {
                     hasExplicitInactive = true;
-                    break;
+                }
+                if prop.code == "status" && prop.valueCode is r4:code {
+                    string s = <string>prop.valueCode;
+                    if s == "retired" || s == "deprecated" {
+                        derivedInactive = true;
+                    }
                 }
             }
         }
@@ -68,7 +74,7 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
                 name: "property",
                 part: [
                     {name: "code", valueCode: "inactive"},
-                    {name: "value", valueBoolean: false}
+                    {name: "value", valueBoolean: derivedInactive}
                 ]
             });
         }
@@ -133,11 +139,17 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
             p.push({name: "abstract", valueBoolean: isAbstract});
 
             boolean hasExplicitInactive = false;
+            boolean derivedInactive = false;
             if item.property is r4:CodeSystemConceptProperty[] {
                 foreach var prop in <r4:CodeSystemConceptProperty[]>item.property {
                     if prop.code == "inactive" {
                         hasExplicitInactive = true;
-                        break;
+                    }
+                    if prop.code == "status" && prop.valueCode is r4:code {
+                        string s = <string>prop.valueCode;
+                        if s == "retired" || s == "deprecated" {
+                            derivedInactive = true;
+                        }
                     }
                 }
             }
@@ -146,7 +158,7 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
                     name: "property",
                     part: [
                         {name: "code", valueCode: "inactive"},
-                        {name: "value", valueBoolean: false}
+                        {name: "value", valueBoolean: derivedInactive}
                     ]
                 });
             }
@@ -168,8 +180,6 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
                 childPart.push({name: "value", valueCode: child.code});
                 (<r4:ParametersParameter[]>p).push({name: "property", part: childPart});
             }
-
-
 
             if item.definition is string {
                 p.push({name: "definition", valueString: item.definition});

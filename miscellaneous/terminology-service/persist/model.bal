@@ -45,13 +45,6 @@ public type Concept record {|
 	ValueSetComposeIncludeConcept[] valuesetcomposeincludeconcept;
 |};
 
-// NOTE: The "concept_closure" table (SNOMED CT transitive is-a closure) is NOT
-// modelled here as a persist entity. It is created directly in the store
-// script.sql files and accessed exclusively via native SQL (executeNativeSQL /
-// queryNativeSQL). It is intentionally kept out of the generated persist client
-// because bulk closure inserts (tens of millions of rows) are done with
-// hand-built multi-row INSERTs. See modules/store_*/script.sql.
-
 @sql:Name {value: "valuesets"}
 public type ValueSet record {|
     @sql:Generated

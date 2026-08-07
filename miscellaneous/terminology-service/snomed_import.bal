@@ -27,17 +27,12 @@ import ballerinax/persist.sql as psql;
 const int SNOMED_INSERT_BATCH_SIZE = 1000;
 
 const int SNOMED_CLOSURE_PROGRESS_INTERVAL = 100000;
-
-// One row of the transitive is-a closure, in resolved DB-id space.
 type ClosureRow record {|
     int ancestor;
     int descendant;
     int depth;
 |};
 
-// Import a SNOMED CT RF2 Snapshot from an extracted directory into the DB.
-// Writes one codesystems row (content = fragment, no concepts inlined) and one
-// concepts row per active SNOMED concept.
 public isolated function importSnomedToDb(string dirPath, string? version) returns snomed:SnomedImportSummary|r4:FHIRError {
     snomed:SnomedImportBundle|error bundle = snomed:buildSnomedImport(dirPath, version);
     if bundle is error {
@@ -58,8 +53,6 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     string csUrl = meta.url ?: snomed:SNOMED_SYSTEM_URL;
     string csVersion = meta.version ?: "";
 
-    // Replace any prior load of the same url+version so re-uploads don't
-    // accumulate duplicate CodeSystem/concepts/closure rows.
     int replaced = check replacePriorLoads(csUrl, csVersion);
     if replaced > 0 {
         log:printInfo(string `SNOMED replace: removed ${replaced} prior load(s) for ${csUrl}|${csVersion}`);
@@ -88,8 +81,6 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     }
     int codeSystemId = codeSystemResult[0];
 
-    // Insert concepts + closure. On any failure, delete the partial load so we
-    // never leave a half-imported CodeSystem behind (cleanup-on-failure).
     [int, int]|r4:FHIRError loadResult = loadConceptsAndClosure(bundle, codeSystemId);
     if loadResult is r4:FHIRError {
         error? cleanup = deleteSnomedCodeSystemCascade(codeSystemId);
@@ -112,10 +103,6 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     };
 }
 
-// Insert all concepts (parentConceptId left NULL) then compute + persist the
-// transitive is-a closure. Returns [conceptsImported, closureRowsWritten].
-// Kept separate from importSnomedToDb so a failure here can be cleaned up as a
-// unit by the caller.
 isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int]|r4:FHIRError {
     int imported = 0;
     map<int> dbIdByCode = {};
@@ -168,8 +155,6 @@ isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int c
     return [imported, closureRowsWritten];
 }
 
-// Find prior loads for a given url+version and cascade-delete each. Returns the
-// number of prior CodeSystems removed.
 isolated function replacePriorLoads(string url, string 'version) returns int|r4:FHIRError {
     sql:ParameterizedQuery q = sql:queryConcat(
             `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
@@ -200,9 +185,6 @@ isolated function replacePriorLoads(string url, string 'version) returns int|r4:
     return ids.length();
 }
 
-// Delete a SNOMED CodeSystem and everything scoped to it: closure rows, then
-// concepts, then the codesystems row. concept_closure has no FKs, and SNOMED
-// creates no ValueSet rows referencing these concepts, so this ordering is safe.
 isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
     sql:ParameterizedQuery delClosure = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
@@ -217,9 +199,6 @@ isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error?
     _ = check sClient->executeNativeSQL(delCodeSystem);
 }
 
-// Compute the transitive is-a closure and insert it into concept_closure in
-// batches. Returns the number of rows written. Ancestors that aren't in the
-// imported set (dbIdByCode) are skipped; self rows are always emitted.
 isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
     int written = 0;
     ClosureRow[] batch = [];
@@ -236,9 +215,6 @@ isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByC
             }
         }
 
-        // Flush once we're at/over the batch size. A single concept adds only
-        // its (bounded) ancestor count, so the overshoot past the threshold is
-        // small.
         if batch.length() >= SNOMED_INSERT_BATCH_SIZE {
             int|r4:FHIRError flushed = flushClosureBatch(batch, codeSystemId);
             if flushed is r4:FHIRError {
@@ -263,9 +239,6 @@ isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByC
     return written;
 }
 
-// Insert a batch of closure rows with a single multi-row INSERT built as one
-// parameterized query. Fragments are assembled into an array and concatenated
-// once (O(n)) to avoid the O(n^2) cost of pairwise queryConcat in a loop.
 isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns int|r4:FHIRError {
     if rows.length() == 0 {
         return 0;
@@ -296,7 +269,6 @@ isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns
     return rows.length();
 }
 
-// Fire-and-forget wrapper around importSnomedToDb for use from the /$upload handler.
 public isolated function runSnomedImportAsync(string extractedPath, string? version, string tempDir) returns () {
     log:printInfo("SNOMED import worker started: extractedPath=" + extractedPath);
     snomed:SnomedImportSummary|r4:FHIRError result = importSnomedToDb(extractedPath, version);
@@ -324,8 +296,6 @@ isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[
     return result;
 }
 
-// The persist ->post(batch) contract returns generated ids in the same order
-// as the input records, so we zip by index to build code -> dbId.
 isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] ids) {
     int count = codes.length() < ids.length() ? codes.length() : ids.length();
     if codes.length() != ids.length() {

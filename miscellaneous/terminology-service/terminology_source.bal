@@ -433,8 +433,7 @@ public isolated class TerminologySource {
 
         // Intensional includes: resolve `concept is-a` / `descendent-of`
         // filters against the closure table. The filter rule lives in the
-        // stored ValueSet resource — it is not persisted in the include flag
-        // tables — so read it from the stored resource here.
+        // stored ValueSet resource
         r4:ValueSet|error storedVs = byteToValueSet(dbValueSet.valueSet);
         if storedVs is r4:ValueSet {
             r4:ValueSetCompose? composeRules = storedVs.compose;
@@ -498,12 +497,6 @@ public isolated class TerminologySource {
         ConceptNode conceptA = check getConceptNode(codeA, codeSystem.codeSystemId);
         ConceptNode conceptB = check getConceptNode(codeB, codeSystem.codeSystemId);
 
-        // A subsumes B when A is a transitive ancestor of B. Check the closure
-        // table (SNOMED, whose concepts have NULL parentConceptId) then fall
-        // back to the parentConceptId chain walk (LOINC / generic CodeSystems
-        // loaded via addCodeSystem, which populate parentConceptId rather than
-        // concept_closure). A CodeSystem uses one representation, so OR-ing is
-        // sound.
         boolean aSubsumesB = closureContainsPair(conceptA.conceptId, conceptB.conceptId, codeSystem.codeSystemId)
             || isInParentChain(conceptA.conceptId, conceptB);
         if aSubsumesB {
@@ -583,10 +576,7 @@ public isolated class TerminologySource {
 }
 
 // Returns true if a closure row (ancestorConceptId, descendantConceptId) exists
-// for this CodeSystem — i.e. `ancestorId` is a transitive is-a ancestor of
-// `descendantId`. A single indexed lookup against concept_closure, replacing the
-// old parentConceptId chain walk. Mirrors isCodeSystemExist: a query error is
-// treated as "no such relationship" (false).
+// for this CodeSystem
 isolated function closureContainsPair(int ancestorId, int descendantId, int codeSystemId) returns boolean {
     sql:ParameterizedQuery sqlQuery = sql:queryConcat(
             `SELECT 1 FROM `, escapeToQuery("concept_closure"),
@@ -640,10 +630,6 @@ isolated function closureMembers(int codeSystemId, string anchorCode, boolean in
     return members;
 }
 
-// Walk the parentConceptId chain of `currentNode` looking for `targetAncestorId`.
-// Used as the subsumption fallback for CodeSystems that store hierarchy in
-// concepts.parentConceptId (LOINC / generic) rather than concept_closure
-// (SNOMED). Returns false for SNOMED concepts, whose parentConceptId is NULL.
 isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode) returns boolean {
     int? parentId = currentNode.parentConceptId;
 
@@ -1099,11 +1085,6 @@ isolated function saveValueSetComposeInclude(r4:ValueSetComposeInclude include, 
             }
 
         } else {
-            // An intensional include (system + filter, no listed concepts) is
-            // NOT a whole-system include. Its membership is resolved at $expand
-            // time from the stored ValueSet resource against concept_closure, so
-            // do not store it as a systemFlag row (which would expand to the
-            // entire CodeSystem).
             r4:ValueSetComposeIncludeFilter[]? filters = include.filter;
             if filters is r4:ValueSetComposeIncludeFilter[] && filters.length() > 0 {
                 return;

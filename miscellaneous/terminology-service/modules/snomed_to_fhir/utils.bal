@@ -32,8 +32,6 @@ const string RF2_RELATIONSHIP_PREFIX = "sct2_Relationship_Snapshot_";
 // SNOMED "is a" attribute typeId. Every taxonomic parent link uses this.
 public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
-// Parse the RF2 Relationship Snapshot and build the full multi-parent is-a
-// adjacency (child SCTID -> [parent SCTID, ...]) in one streaming pass.
 public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, int]|error {
     map<string[]> parentsByChild = {};
     int rowsRead = 0;
@@ -66,17 +64,9 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
     return [parentsByChild, rowsRead];
 }
 
-// Compute every transitive is-a ancestor of `code` with its minimum depth
-// (shortest path length), by breadth-first traversal upward over the parent
-// adjacency map. Self is NOT included (depth-0 self rows are added by the DB
-// layer). BFS guarantees the first time an ancestor is reached is via a
-// shortest path, which is the correct depth for a polyhierarchy where the same
-// ancestor is reachable by paths of different lengths. The visited set also
-// guards against any accidental cycle (SNOMED is a DAG, but defensive).
 public isolated function computeAncestorDepths(string code, map<string[]> parentsByChild) returns map<int> {
     map<int> ancestorDepths = {};
 
-    // BFS frontier of concept SCTIDs at the current depth.
     string[] frontier = parentsByChild[code] ?: [];
     int depth = 1;
 
@@ -84,7 +74,6 @@ public isolated function computeAncestorDepths(string code, map<string[]> parent
         string[] nextFrontier = [];
         foreach string ancestor in frontier {
             if ancestorDepths.hasKey(ancestor) {
-                // Already reached via an equal-or-shorter path; skip.
                 continue;
             }
             ancestorDepths[ancestor] = depth;
@@ -187,9 +176,6 @@ isolated function streamTextDefinitionIndex(string filePath) returns [map<string
     return [index, rowsRead];
 }
 
-// Stream the Concept Snapshot and build one SnomedConceptImport per active
-// concept, joining against the pre-built description and text-definition
-// indexes.
 isolated function streamConceptImports(string filePath, map<ConceptDescriptions> descIndex, map<string> defIndex) returns [SnomedConceptImport[], int]|error {
     SnomedConceptImport[] result = [];
     int rowsRead = 0;
@@ -202,19 +188,14 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
             string[] cols = regex:split(line, "\\t");
             if cols.length() >= CONCEPT_COLUMN_COUNT {
                 rowsRead += 1;
-                // Import all concepts, active and inactive. The active flag
-                // (cols[2]) is carried into the record and into the concept
-                // BYTEA property, so inactive concepts still resolve via
-                // $lookup with their status intact.
+                // Import all concepts, active and inactive.
                 string code = cols[0];
                 ConceptDescriptions? cd = descIndex[code];
                 string? fsn = cd?.fsn;
                 string[] synonyms = cd?.synonyms ?: [];
 
-                // Display fallback: first active synonym -> FSN -> code.
                 string display = synonyms.length() > 0 ? synonyms[0] : (fsn ?: code);
 
-                // Definition fallback: active TextDefinition -> FSN -> null.
                 string? textDef = defIndex[code];
                 string? definition = textDef is string ? textDef : fsn;
 

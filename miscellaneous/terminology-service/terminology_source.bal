@@ -32,7 +32,6 @@ import ballerinax/health.fhir.r4.terminology;
 final store_pg:Client sClient = check initializeClient();
 
 function initializeClient() returns store_pg:Client|store_h2:Client|error {
-
     if db_type == "postgresql" {
         log:printInfo("Initializing PostgreSQL client for terminology service");
         return check new store_pg:Client();
@@ -72,7 +71,6 @@ public isolated class TerminologySource {
                     cause = error("Error while adding CodeSystem"),
                     httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
         }
-
         // extract the concepts from the codesystem and add them to the database
         extractConceptsFromCodeSystem(codeSystem, response[0]);
     }
@@ -101,7 +99,6 @@ public isolated class TerminologySource {
                     cause = error("Error while adding ValueSet"),
                     httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
         }
-
         // extract the concepts from the valueset and add them to the database
         extractConceptsFromValueSet(valueSet, response[0]);
     }

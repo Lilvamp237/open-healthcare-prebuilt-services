@@ -1012,6 +1012,48 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
     return [parent, children];
 }
 
+// Reads a concept's stored abstract/inactive derivation inputs. abstract is set
+// when the concept has property notSelectable=true (or abstract=true); inactive
+// is set when the concept has an explicit inactive=true property, or its status
+// property is retired/deprecated. Same derivation rules as codesystemConceptsToParameters
+// uses for $lookup, applied here for $expand's contains[] entries.
+// Returns [false, false] if the concept cannot be resolved.
+isolated function getConceptFlags(r4:uri system, r4:code code, string? version = ()) returns [boolean, boolean] {
+    store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
+    if storeCs is error {
+        return [false, false];
+    }
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(storeCs.codeSystemId, code);
+    if storeConcept is r4:FHIRError {
+        return [false, false];
+    }
+    r4:CodeSystemConcept|error concept = byteToConcept(storeConcept.concept);
+    if concept is error {
+        return [false, false];
+    }
+
+    boolean isAbstract = false;
+    boolean isInactive = false;
+    if concept.property is r4:CodeSystemConceptProperty[] {
+        foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
+            if (prop.code == "notSelectable" || prop.code == "abstract")
+                    && prop.valueBoolean is boolean && <boolean>prop.valueBoolean {
+                isAbstract = true;
+            }
+            if prop.code == "inactive" && prop.valueBoolean is boolean && <boolean>prop.valueBoolean {
+                isInactive = true;
+            }
+            if prop.code == "status" && prop.valueCode is r4:code {
+                string s = <string>prop.valueCode;
+                if s == "retired" || s == "deprecated" {
+                    isInactive = true;
+                }
+            }
+        }
+    }
+    return [isAbstract, isInactive];
+}
+
 
 isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store_h2:Concept|r4:FHIRError {
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(sqlQuery);

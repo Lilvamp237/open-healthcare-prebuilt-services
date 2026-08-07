@@ -14,14 +14,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import terminology_service.loinc_to_fhir as loinc;
-
 import ballerina/http;
 import ballerina/log;
 import ballerina/regex;
 import ballerina/time;
+import ballerina/uuid;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
+import ballerina/log;
+import terminology_service.loinc_to_fhir as loinc;
 
 final TerminologySource terminology_source = new TerminologySource();
 
@@ -156,6 +157,109 @@ isolated function extractBodyParamValue(map<json> paramItem) returns string? {
     return ();
 }
 
+// Fills `system` on every contains[] entry that's missing it. The library's
+// expansion returns entries with code+display populated but leaves system
+// nil; the FHIR spec requires every entry to declare its CodeSystem.
+// Sources the system URL from the source ValueSet's compose.include[].system
+// when all includes reference the same CS (the common case).
+
+isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, map<r4:RequestSearchParameter[]> requestParams) returns r4:ValueSet {
+    r4:ValueSet mutable = vs.clone();
+    r4:ValueSetExpansion? expansion = mutable.expansion;
+    if expansion is () {
+        return mutable;
+    }
+
+    // Determine the CS URL: use the source VS's compose if all includes agree
+    string? csUrl = ();
+    if sourceVs is r4:ValueSet {
+        r4:ValueSetCompose? compose = sourceVs.compose;
+        if compose is r4:ValueSetCompose {
+            r4:ValueSetComposeInclude[] includes = compose.include;
+            if includes.length() > 0 {
+                string? firstSys = includes[0].system;
+                boolean uniform = firstSys is string;
+                foreach var inc in includes {
+                    if inc.system != firstSys {
+                        uniform = false;
+                        break;
+                    }
+                }
+                if uniform && firstSys is string {
+                    csUrl = firstSys;
+                }
+            }
+        }
+    }
+
+    if csUrl is () {
+        return mutable;
+    }
+
+    r4:ValueSetExpansionContains[]? contains = expansion.contains;
+    if contains is () {
+        return mutable;
+    }
+    if expansion.identifier is () {
+        expansion.identifier = "urn:uuid:" + uuid:createType4AsString();
+    }
+
+
+    //foreach int i in 0 ..< contains.length() {
+        //if contains[i].system is () {
+        //    contains[i].system = <r4:uri>csUrl;
+        //}
+    //}
+    foreach int i in 0 ..< contains.length() {
+        if contains[i].system is () {
+            contains[i].system = <r4:uri>csUrl;
+        }
+
+        // Fill abstract/inactive per-entry using the same derivation rules as
+        // $lookup. Only set when true — omit the field entirely when false, since
+        // FHIR represents "not abstract"/"not inactive" as the field's absence.
+        r4:code? entryCode = contains[i].code;
+        if entryCode is r4:code {
+            [boolean, boolean] flags = getConceptFlags(<r4:uri>csUrl, entryCode);
+            if flags[0] {
+                contains[i].'abstract = true;
+            }
+            if flags[1] {
+                contains[i].inactive = true;
+            }
+        }
+    }
+
+    // Build expansion.parameter[]: echo modifier flags the request carried, plus a
+    // used-codesystem entry declaring which CS (and version) the expansion drew from.
+    // tx.fhir.org expects this even though the terminology library doesn't populate it.
+    r4:ValueSetExpansionParameter[] expParams = [];
+
+    r4:RequestSearchParameter[]? excludeNestedParam = requestParams["excludeNested"];
+    if excludeNestedParam is r4:RequestSearchParameter[] && excludeNestedParam.length() > 0 {
+        expParams.push({name: "excludeNested", valueBoolean: excludeNestedParam[0].value == "true"});
+    }
+
+    r4:CodeSystem|r4:FHIRError csForVersion = readCodeSystemByUrl(<string>csUrl);
+    if csForVersion is r4:CodeSystem {
+        string usedCs = csForVersion.version is string
+            ? <string>csUrl + "|" + <string>csForVersion.version
+            : <string>csUrl;
+        expParams.push({name: "used-codesystem", valueUri: usedCs});
+    }
+
+    r4:RequestSearchParameter[]? displayLangParam = requestParams["displayLanguage"];
+    if displayLangParam is r4:RequestSearchParameter[] && displayLangParam.length() > 0 {
+        expParams.push({name: "displayLanguage", valueString: displayLangParam[0].value});
+    }
+
+    if expParams.length() > 0 {
+        expansion.'parameter = expParams;
+    }
+    return mutable;
+}
+
+
 public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = ()) returns r4:ValueSet|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters = ctx.getRequestSearchParameters();
     map<r4:RequestSearchParameter[]> mutableParams = {};
@@ -166,14 +270,30 @@ public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = (
     string? system = searchParameters["url"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParameters["url"])[0].value : ();
     map<r4:RequestSearchParameter[]> supportedParams = filterSupportedExpansionParams(mutableParams);
 
+    //r4:ValueSet valueSet;
+    //if id is string {
+        //valueSet = check terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
+    //} else {
+    //    valueSet = check terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
+    //}
+
+    //return valueSet;
     r4:ValueSet valueSet;
+    r4:ValueSet? sourceVs = ();
     if id is string {
-        valueSet = check terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
+        r4:ValueSet resolved = check readValueSetById(id);
+        sourceVs = resolved;
+        valueSet = check terminology:valueSetExpansion(supportedParams, vs = resolved, terminology = terminology_source);
     } else {
+        if system is string {
+            r4:ValueSet|r4:FHIRError vsResult = readValueSetByUrl(system);
+            if vsResult is r4:ValueSet {
+                sourceVs = vsResult;
+            }
+        }
         valueSet = check terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
     }
-
-    return valueSet;
+    return postProcessExpansion(valueSet, sourceVs, mutableParams);
 }
 
 public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters parameters, string? id = ()) returns r4:ValueSet|r4:FHIRError {
@@ -221,13 +341,36 @@ public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters
 
     map<r4:RequestSearchParameter[]> supportedParams = filterSupportedExpansionParams(mutableParams);
 
+    //if id is string {
+        //return terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
+    //}
+    //if inlineValueSet is r4:ValueSet {
+        //return terminology:valueSetExpansion(supportedParams, vs = inlineValueSet, terminology = terminology_source);
+    //}
+    //return terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
+
+    r4:ValueSet expansionResult;
+    r4:ValueSet? sourceVs = ();
+
     if id is string {
-        return terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
+        r4:ValueSet resolved = check readValueSetById(id);
+        sourceVs = resolved;
+        expansionResult = check terminology:valueSetExpansion(supportedParams, vs = resolved, terminology = terminology_source);
+    } else if inlineValueSet is r4:ValueSet {
+        sourceVs = inlineValueSet;
+        expansionResult = check terminology:valueSetExpansion(supportedParams, vs = inlineValueSet, terminology = terminology_source);
+    } else {
+        if system is string {
+            r4:ValueSet|r4:FHIRError vsResult = readValueSetByUrl(system);
+            if vsResult is r4:ValueSet {
+                sourceVs = vsResult;
+            }
+        }
+        expansionResult = check terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
     }
-    if inlineValueSet is r4:ValueSet {
-        return terminology:valueSetExpansion(supportedParams, vs = inlineValueSet, terminology = terminology_source);
-    }
-    return terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
+
+    return postProcessExpansion(expansionResult, sourceVs, mutableParams);
+
 }
 
 public isolated function valueSetValidateCodePost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {

@@ -456,7 +456,6 @@ public isolated class TerminologySource {
             }
         }
 
-        // Pagination
         int totalCount = allConcepts.length();
         r4:ValueSetExpansionContains[] pagedConcepts;
         if totalCount > offset + count {
@@ -954,10 +953,6 @@ isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns 
 // Fetch a concept's direct parent (via parentConceptId FK) and direct children
 // (concepts whose parentConceptId points at this concept). Used to emit `parent`
 // and `child` property entries in $lookup responses.
-//
-// Returns [parent, children] — parent is nil if the concept is a root, children
-// is an empty array if the concept has no descendants. Any DB failure returns
-// [(), []] so the caller can still emit a flat lookup response.
 isolated function getConceptHierarchy(r4:uri system, r4:code code, string? version = ())
         returns [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
@@ -1012,9 +1007,7 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
 // Reads a concept's stored abstract/inactive derivation inputs. abstract is set
 // when the concept has property notSelectable=true (or abstract=true); inactive
 // is set when the concept has an explicit inactive=true property, or its status
-// property is retired/deprecated. Same derivation rules as codesystemConceptsToParameters
-// uses for $lookup, applied here for $expand's contains[] entries.
-// Returns [false, false] if the concept cannot be resolved.
+// property is retired/deprecated.
 isolated function getConceptFlags(r4:uri system, r4:code code, string? version = ()) returns [boolean, boolean] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
     if storeCs is error {

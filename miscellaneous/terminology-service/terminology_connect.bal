@@ -157,12 +157,6 @@ isolated function extractBodyParamValue(map<json> paramItem) returns string? {
     return ();
 }
 
-// Fills `system` on every contains[] entry that's missing it. The library's
-// expansion returns entries with code+display populated but leaves system
-// nil; the FHIR spec requires every entry to declare its CodeSystem.
-// Sources the system URL from the source ValueSet's compose.include[].system
-// when all includes reference the same CS (the common case).
-
 isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, map<r4:RequestSearchParameter[]> requestParams) returns r4:ValueSet {
     r4:ValueSet mutable = vs.clone();
     r4:ValueSetExpansion? expansion = mutable.expansion;
@@ -170,7 +164,6 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         return mutable;
     }
 
-    // Determine the CS URL: use the source VS's compose if all includes agree
     string? csUrl = ();
     if sourceVs is r4:ValueSet {
         r4:ValueSetCompose? compose = sourceVs.compose;
@@ -204,20 +197,11 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         expansion.identifier = "urn:uuid:" + uuid:createType4AsString();
     }
 
-
-    //foreach int i in 0 ..< contains.length() {
-        //if contains[i].system is () {
-        //    contains[i].system = <r4:uri>csUrl;
-        //}
-    //}
     foreach int i in 0 ..< contains.length() {
         if contains[i].system is () {
             contains[i].system = <r4:uri>csUrl;
         }
 
-        // Fill abstract/inactive per-entry using the same derivation rules as
-        // $lookup. Only set when true — omit the field entirely when false, since
-        // FHIR represents "not abstract"/"not inactive" as the field's absence.
         r4:code? entryCode = contains[i].code;
         if entryCode is r4:code {
             [boolean, boolean] flags = getConceptFlags(<r4:uri>csUrl, entryCode);
@@ -230,9 +214,6 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         }
     }
 
-    // Build expansion.parameter[]: echo modifier flags the request carried, plus a
-    // used-codesystem entry declaring which CS (and version) the expansion drew from.
-    // tx.fhir.org expects this even though the terminology library doesn't populate it.
     r4:ValueSetExpansionParameter[] expParams = [];
 
     r4:RequestSearchParameter[]? excludeNestedParam = requestParams["excludeNested"];
@@ -270,13 +251,6 @@ public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = (
     string? system = searchParameters["url"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParameters["url"])[0].value : ();
     map<r4:RequestSearchParameter[]> supportedParams = filterSupportedExpansionParams(mutableParams);
 
-    //r4:ValueSet valueSet;
-    //if id is string {
-        //valueSet = check terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
-    //} else {
-    //    valueSet = check terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
-    //}
-
     //return valueSet;
     r4:ValueSet valueSet;
     r4:ValueSet? sourceVs = ();
@@ -303,11 +277,6 @@ public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters
         mutableParams[k] = v;
     }
 
-    // Merge the parameters supplied in the POST Parameters body. The tx-ecosystem
-    // tests expand either by an inline "valueSet" resource or, more commonly, by a
-    // "url" pointing at a previously-uploaded ValueSet. The previous implementation
-    // ignored "url" and passed an empty ValueSet, causing a 404 for every url-based
-    // expand; we now resolve by url as well.
     r4:ValueSet? inlineValueSet = ();
     string? system = ();
     json paramsJson = parameters.toJson();
@@ -329,8 +298,6 @@ public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters
             } else if paramName == "url" {
                 system = extractBodyParamValue(paramItem);
             } else {
-                // Carry the remaining scalar parameters through; filterSupportedExpansionParams
-                // keeps the supported ones (valueSetVersion, filter, count, offset) and drops the rest.
                 string? val = extractBodyParamValue(paramItem);
                 if val is string {
                     mutableParams[paramName] = [{name: paramName, value: val, 'type: r4:STRING, typedValue: {modifier: ()}}];
@@ -340,14 +307,6 @@ public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters
     }
 
     map<r4:RequestSearchParameter[]> supportedParams = filterSupportedExpansionParams(mutableParams);
-
-    //if id is string {
-        //return terminology:valueSetExpansion(supportedParams, vs = check readValueSetById(id), terminology = terminology_source);
-    //}
-    //if inlineValueSet is r4:ValueSet {
-        //return terminology:valueSetExpansion(supportedParams, vs = inlineValueSet, terminology = terminology_source);
-    //}
-    //return terminology:valueSetExpansion(supportedParams, system = system, terminology = terminology_source);
 
     r4:ValueSet expansionResult;
     r4:ValueSet? sourceVs = ();
@@ -403,11 +362,6 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
     r4:CodeSystemConcept[]|r4:CodeSystemConcept result;
     r4:CodeSystem? cs = ();
 
-    //if id is string {
-        //result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = (check readCodeSystemById(id)).url, version = 'version, terminology = terminology_source);
-    //} else if system is string {
-        //result = check terminology:codeSystemLookUp(<r4:code>codeValue, system = system, version = 'version, terminology = terminology_source);
-    
     if id is string {
         r4:CodeSystem resolvedCs = check readCodeSystemById(id);
         cs = resolvedCs;
@@ -436,9 +390,6 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
     }
 
     return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts);
-    //return codesystemConceptsToParameters(result, cs);
-    //return codesystemConceptsToParameters(result);
-
 }
 
 public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
@@ -455,7 +406,7 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
 
     if typedParams.'parameter is r4:ParametersParameter[] {
         // $lookup accepts EITHER a "coding" parameter OR separate "system"/"code"
-        // (+ optional "version") parameters. The tx-ecosystem tests use the latter form.
+        // (+ optional "version") parameters.
         foreach var item in <r4:ParametersParameter[]>typedParams.'parameter {
             match item.name {
                 "coding" => {
@@ -530,12 +481,6 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
 
     r4:Parameters|error parse = parameters.toJson().cloneWithType(r4:Parameters);
     if parse is r4:Parameters && parse.'parameter is r4:ParametersParameter[] {
-        // $validate-code accepts multiple input shapes:
-        //   * coding / codeableConcept
-        //   * inline valueSet + coding
-        //   * top-level system + code (+ optional version, url)
-        // The tx-ecosystem tests send the last form. Previously we only handled the
-        // first two and returned "Invalid request payload" for the third.
         foreach var item in <r4:ParametersParameter[]>parse.'parameter {
             match item.name {
                 "coding" => {

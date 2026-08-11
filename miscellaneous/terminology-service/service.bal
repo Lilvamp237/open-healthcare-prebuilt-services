@@ -17,8 +17,8 @@
 import ballerina/http;
 import ballerina/log;
 import ballerinax/health.fhir.r4;
-import ballerinax/health.fhir.r4.international401;
 import ballerinax/health.fhirr4;
+import ballerinax/health.fhir.r4.international401;
 
 listener http:Listener baseListener = check http:getDefaultListener();
 
@@ -189,7 +189,7 @@ service /fhir/r4/CodeSystem on new fhirr4:Listener(config = codeSystemApiConfig)
     isolated resource function post .(r4:FHIRContext ctx, r4:CodeSystem codeSystem) returns http:Response|r4:FHIRError {
         log:printDebug("FHIR Terminology request is received. Interaction: Add new CodeSystem");
 
-        _ =  check addCodeSystem(ctx, codeSystem);
+        _ = check addCodeSystem(ctx, codeSystem);
 
         http:Response successResponse = new;
         successResponse.statusCode = http:STATUS_CREATED;
@@ -268,12 +268,12 @@ service http:InterceptableService /fhir/r4/\$find\-code on baseListener {
 
 service http:InterceptableService /fhir/r4/metadata on baseListener {
 
-            public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
-                return [new FHIRResponseErrorInterceptor()];
-            }
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
 
-        isolated resource function get .(http:RequestContext ctx, http:Request request, string? mode) returns http:Response|r4:FHIRError {
-        
+    isolated resource function get .(http:RequestContext ctx, http:Request request, string? mode) returns http:Response|r4:FHIRError {
+
         log:printDebug("FHIR Terminology request is received. Interaction: Metadata (CapabilityStatement)");
 
         http:Response response = new;
@@ -292,25 +292,25 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                 "date": "2025-06-17",
                 "publisher": "WSO2 LLC.",
                 "contact": [
-                {
-                    "name": "WSO2 LLC.",
-                    "telecom": [
                     {
-                        "system": "url",
-                        "value": "http://www.wso2.com"
+                        "name": "WSO2 LLC.",
+                        "telecom": [
+                            {
+                                "system": "url",
+                                "value": "http://www.wso2.com"
+                            }
+                        ]
                     }
-                    ]
-                }
                 ],
                 "description": "TerminologyCapabilities for the WSO2 Ballerina FHIR R4 Terminology Service (wso2/terminology_service v0.1.1), powered by the ballerinax/health.fhir.r4.terminology v7.0.1 library. The service persists CodeSystem and ValueSet resources in a relational database (PostgreSQL or H2). CodeSystem concepts are extracted into a separate table at ingest with a parentConceptId hierarchy, enabling efficient $lookup and DB-native $subsumes traversal. ConceptMap and $translate are defined in the library but are not implemented in this service tier — all ConceptMap interface methods are stubs.",
                 "kind": "instance",
                 "software": {
-                "name": "ballerinax/health.fhir.r4.terminology",
-                "version": "7.0.1"
+                    "name": "ballerinax/health.fhir.r4.terminology",
+                    "version": "7.0.1"
                 },
                 "implementation": {
-                "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9089",
-                "url": "http://localhost:9089/fhir/r4"
+                    "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9089",
+                    "url": "http://localhost:9089/fhir/r4"
                 },
                 "lockedDate": false,
                 "codeSearch": "all",
@@ -318,63 +318,63 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                     {
                         "uri": "http://loinc.org",
                         "version": [
-                        {
-                            "code": "*",
-                            "isDefault": false,
-                            "compositional": false
-                        }
+                            {
+                                "code": "*",
+                                "isDefault": false,
+                                "compositional": false
+                            }
                         ],
                         "subsumption": false
                     },
                     {
                         "uri": "http://snomed.info/sct",
                         "version": [
-                        {
-                            "code": "*",
+                            {
+                                "code": "*",
 
-                        "isDefault": false,
-                        "compositional": false
+                                "isDefault": false,
+                                "compositional": false
+                            }
+                        ],
+                        "subsumption": true
                     }
-                    ],
-                    "subsumption": true
-                }
                 ],
                 "expansion": {
-                "hierarchical": false,
-                "paging": true,
-                "incomplete": false,
-                "parameter": [
-                    {
-                    "name": "url",
-                    "documentation": "Canonical URL of the ValueSet to expand. Resolved via the database. Required when no ValueSet is provided inline and no {id} path parameter is used."
-                    },
-                    {
-                    "name": "valueSetVersion",
-                    "documentation": "Version of the ValueSet to expand when resolving by URL. Maps to the 'version' search parameter internally."
-                    },
-                    {
-                    "name": "filter",
-                    "documentation": "Case-insensitive substring match applied to concept display values during expansion. Filters allConcepts before pagination is applied."
-                    },
-                    {
-                    "name": "_count",
-                    "documentation": "Maximum number of concepts to return per page. Default: 20. Maximum enforced: 300 (returns HTTP 413 if exceeded)."
-                    },
-                    {
-                    "name": "_offset",
-                    "documentation": "Zero-based index of the first concept to return. Enables pagination of expansion results. The total field in the response always reflects the unfiltered full count."
-                    }
-                ],
-                "textFilter": null
+                    "hierarchical": false,
+                    "paging": true,
+                    "incomplete": false,
+                    "parameter": [
+                        {
+                            "name": "url",
+                            "documentation": "Canonical URL of the ValueSet to expand. Resolved via the database. Required when no ValueSet is provided inline and no {id} path parameter is used."
+                        },
+                        {
+                            "name": "valueSetVersion",
+                            "documentation": "Version of the ValueSet to expand when resolving by URL. Maps to the 'version' search parameter internally."
+                        },
+                        {
+                            "name": "filter",
+                            "documentation": "Case-insensitive substring match applied to concept display values during expansion. Filters allConcepts before pagination is applied."
+                        },
+                        {
+                            "name": "_count",
+                            "documentation": "Maximum number of concepts to return per page. Default: 20. Maximum enforced: 300 (returns HTTP 413 if exceeded)."
+                        },
+                        {
+                            "name": "_offset",
+                            "documentation": "Zero-based index of the first concept to return. Enables pagination of expansion results. The total field in the response always reflects the unfiltered full count."
+                        }
+                    ],
+                    "textFilter": null
                 },
                 "validateCode": {
-                "translations": false
+                    "translations": false
                 },
                 "translation": {
-                "needsMap": true
+                    "needsMap": true
                 },
                 "closure": {
-                "translation": false
+                    "translation": false
                 }
             };
             response.setJsonPayload(terminologyCapabilities.toJson());

@@ -379,7 +379,7 @@ public function subsumeCodeSystem11() returns error? {
 }
 public function subsumeCodeSystem12() returns error? {
     r4:Coding codingA = {system: "urn:oid:2.16.840.1.113883.6.238", code: "1000-9"};
-     r4:Coding codingB = {system: "urn:oid:2.16.840.1.113883.6.238", code: "1002-5"};
+    r4:Coding codingB = {system: "urn:oid:2.16.840.1.113883.6.238", code: "1002-5"};
 
     r4:ParametersParameter cA = {name: "codingA", valueCoding: codingA};
     r4:ParametersParameter cB = {name: "codingB", valueCoding: codingB};
@@ -387,11 +387,11 @@ public function subsumeCodeSystem12() returns error? {
     r4:Parameters requestPayload = {'parameter: [cA, cB, system]};
 
     http:Response response2 = check csClient->post("/$subsumes", requestPayload, {"Content-Type": FHIR_JSON});
-     json actual = check response2.getJsonPayload();
+    json actual = check response2.getJsonPayload();
 
     json expected = returnCodeSystemData("subsumed");
     test:assertEquals(actual, expected);
- }
+}
 
 // ===========================Value set======================================
 
@@ -515,8 +515,8 @@ public function validateCodeValueSet7() returns error? {
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
 
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid operation payload due to Payload " +
-    "for operation \"$validate-code\" is not a valid \"Parameters\" or \"Bundle\" resource. Please provide a valid " +
-    "resource as the payload.");
+            "for operation \"$validate-code\" is not a valid \"Parameters\" or \"Bundle\" resource. Please provide a valid " +
+            "resource as the payload.");
 }
 
 @test:Config {

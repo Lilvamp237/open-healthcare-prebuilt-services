@@ -208,7 +208,6 @@ isolated function readFileJsonAndReturnCodeSystem(string path) returns r4:CodeSy
     return check parser:parse(jsonString).ensureType();
 }
 
-
 function init() returns error? {
     check removeDirectory(TEMPORARY_FILES_DIRECTORY_NAME);
 }

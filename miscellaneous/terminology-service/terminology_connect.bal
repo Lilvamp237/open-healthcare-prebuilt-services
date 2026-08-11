@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -17,11 +17,11 @@
 import terminology_service.loinc_to_fhir as loinc;
 
 import ballerina/http;
+import ballerina/log;
 import ballerina/regex;
 import ballerina/time;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
-import ballerina/log;
 
 final TerminologySource terminology_source = new TerminologySource();
 
@@ -58,7 +58,7 @@ public isolated function readValueSetByUrl(string url) returns r4:ValueSet|r4:FH
 }
 
 public isolated function searchValueSet(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
-    
+
     map<r4:RequestSearchParameter[]>|error params = getSearchParametersFromFHIRContext(ctx);
 
     if params is error {
@@ -87,7 +87,7 @@ public isolated function searchValueSet(r4:FHIRContext ctx) returns r4:Bundle|r4
 
 public isolated function searchCodeSystem(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
-    map<r4:RequestSearchParameter[]>|error clonedParams =  params.cloneWithType();
+    map<r4:RequestSearchParameter[]>|error clonedParams = params.cloneWithType();
 
     if clonedParams is error {
         return r4:createFHIRError(
@@ -401,7 +401,7 @@ public isolated function subsumesPost(r4:FHIRContext ctx, r4:Parameters paramete
 }
 
 public isolated function batchValidateValueSets(r4:Bundle bundle) returns r4:Bundle|r4:FHIRError {
-    
+
     if bundle.'type != r4:BUNDLE_TYPE_BATCH {
         return r4:createFHIRError(
                 "Not a batch type bundle",
@@ -415,15 +415,15 @@ public isolated function batchValidateValueSets(r4:Bundle bundle) returns r4:Bun
     if entries != () {
         foreach r4:BundleEntry entry in entries {
             if entry.request is r4:BundleEntryRequest {
-                
+
                 r4:BundleEntryRequest? entryRequest = entry.request;
-                
+
                 if entryRequest is () {
                     return r4:createFHIRError(
-                        "No entry requests found in the bundle",
-                        r4:ERROR,
-                        r4:INVALID_REQUIRED,
-                        httpStatusCode = http:STATUS_BAD_REQUEST);
+                            "No entry requests found in the bundle",
+                            r4:ERROR,
+                            r4:INVALID_REQUIRED,
+                            httpStatusCode = http:STATUS_BAD_REQUEST);
                 }
 
                 // split the url to get system and code

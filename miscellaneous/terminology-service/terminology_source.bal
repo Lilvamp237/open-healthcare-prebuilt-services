@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -25,13 +25,14 @@ import ballerina/regex;
 import ballerina/sql;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
+
 // import ballerina/io;
 
 // Improve after the issue https://github.com/wso2/open-healthcare-prebuilt-services/issues/151 is fixed
 final store_pg:Client sClient = check initializeClient();
 
 function initializeClient() returns store_pg:Client|store_h2:Client|error {
-    
+
     if db_type == "postgresql" {
         log:printInfo("Initializing PostgreSQL client for terminology service");
         return check new store_pg:Client();
@@ -273,7 +274,7 @@ public isolated class TerminologySource {
     }
 
     public isolated function searchValueSet(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:ValueSet[]|r4:FHIRError {
-        
+
         stream<store_h2:ValueSet, persist:Error?> valueSetStream;
 
         if params.length() == 0 {
@@ -296,7 +297,7 @@ public isolated class TerminologySource {
             }
             valueSetStream = sClient->/valuesets(store_h2:ValueSet, whereClause);
         }
-        
+
         store_h2:ValueSet[]|error dbValueSets = streamToStoreValueSet(valueSetStream);
 
         if dbValueSets is error {
@@ -605,7 +606,7 @@ isolated function closureMembers(int codeSystemId, string anchorCode, boolean in
             `SELECT c.* FROM `, escapeToQuery("concepts"), ` c JOIN `, escapeToQuery("concept_closure"), ` cc ON c.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
             ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${anchor.conceptId}`,
             ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
-            includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`)
+                includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`)
     );
 
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);

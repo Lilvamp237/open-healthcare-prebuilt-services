@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -27,12 +27,16 @@ import ballerinax/persist.sql as psql;
 const int SNOMED_INSERT_BATCH_SIZE = 1000;
 
 const int SNOMED_CLOSURE_PROGRESS_INTERVAL = 100000;
+
 type ClosureRow record {|
     int ancestor;
     int descendant;
     int depth;
 |};
 
+// Parses an RF2 release directory and loads it into the database. Any earlier
+// load of the same url and version is replaced, and a partial load is rolled
+// back if the import fails partway.
 public isolated function importSnomedToDb(string dirPath, string? version) returns snomed:SnomedImportSummary|r4:FHIRError {
     snomed:SnomedImportBundle|error bundle = snomed:buildSnomedImport(dirPath, version);
     if bundle is error {
@@ -103,6 +107,8 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     };
 }
 
+// Inserts the concepts first to obtain their database ids, then uses those ids
+// to build the closure rows. Returns the counts of each.
 isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int]|r4:FHIRError {
     int imported = 0;
     map<int> dbIdByCode = {};
@@ -155,6 +161,8 @@ isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int c
     return [imported, closureRowsWritten];
 }
 
+// Removes any earlier load of the same url and version, so re-uploading a
+// release replaces it instead of duplicating it.
 isolated function replacePriorLoads(string url, string 'version) returns int|r4:FHIRError {
     sql:ParameterizedQuery q = sql:queryConcat(
             `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
@@ -185,6 +193,8 @@ isolated function replacePriorLoads(string url, string 'version) returns int|r4:
     return ids.length();
 }
 
+// Deletes a CodeSystem and everything under it, in dependency order:
+// closure rows, then concepts, then the CodeSystem itself.
 isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
     sql:ParameterizedQuery delClosure = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
@@ -199,6 +209,8 @@ isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error?
     _ = check sClient->executeNativeSQL(delCodeSystem);
 }
 
+// Writes one closure row per concept-ancestor pair, plus a depth-0 self row
+// for each concept. Rows are inserted in batches. Returns the row count.
 isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
     int written = 0;
     ClosureRow[] batch = [];
@@ -239,6 +251,8 @@ isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByC
     return written;
 }
 
+// Inserts a batch as one multi-row statement. The fragments are collected in
+// an array and joined once, rather than concatenated inside the loop.
 isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns int|r4:FHIRError {
     if rows.length() == 0 {
         return 0;
@@ -269,6 +283,8 @@ isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns
     return rows.length();
 }
 
+// Runs the import in the background so the upload request can return right
+// away, and removes the temp directory once the worker is done with it.
 public isolated function runSnomedImportAsync(string extractedPath, string? version, string tempDir) returns () {
     log:printInfo("SNOMED import worker started: extractedPath=" + extractedPath);
     snomed:SnomedImportSummary|r4:FHIRError result = importSnomedToDb(extractedPath, version);
@@ -296,6 +312,8 @@ isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[
     return result;
 }
 
+// Maps each concept code to its generated database id. Relies on the insert
+// returning ids in the same order as the records that were sent.
 isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] ids) {
     int count = codes.length() < ids.length() ? codes.length() : ids.length();
     if codes.length() != ids.length() {

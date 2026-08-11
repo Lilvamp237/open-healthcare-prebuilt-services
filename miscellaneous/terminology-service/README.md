@@ -42,9 +42,41 @@ The service exposes the following main endpoints under `/fhir/r4`:
 
 - `POST /` — Batch validate ValueSets.
 - `POST /$upload` — Upload terminology resources.
+- `POST /$upload` — Upload terminology resources as a zip. See [Uploading Terminology Content](#uploading-terminology-content).
 - `GET /$find-code` — Find codes.
 - `POST /$find-code` — Find codes with a POST body.
 - `GET /metadata` — Get the FHIR CapabilityStatement.
+
+## Uploading Terminology Content
+
+`POST /$upload` accepts a zip archive. Two things are required on the request:
+
+- `Content-Type: application/zip`
+- `x-terminology-type` header, set to `FHIR`, `LOINC`, or `SNOMED`
+
+The header selects how the archive is interpreted. A missing or unrecognised value returns `400`.
+
+### FHIR
+
+Expects a zip of FHIR `CodeSystem-*.json` and `ValueSet-*.json` files. Loaded synchronously.
+
+### LOINC
+
+Expects a LOINC release zip. Converted to a FHIR CodeSystem and loaded synchronously.
+
+- `loinc-version` (query parameter, optional) — version to record on the CodeSystem.
+
+### SNOMED CT
+
+Expects a SNOMED CT RF2 Snapshot release zip, containing the Concept, Description, Relationship and (optionally) Text Definition files.
+
+- `snomed-version` (query parameter, optional) — RF2 release date as `YYYYMMDD`, recorded as the CodeSystem version.
+
+**The import runs in the background.** The request returns `201 Created` as soon as the archive is extracted, before the concepts are loaded. A full release takes several minutes; check the server logs for progress and for the completion summary.
+
+Re-uploading the same url and version replaces the previous load rather than duplicating it. If the import fails partway, the partial load is removed.
+
+Concept hierarchy is stored in the `concept_closure` table as a transitive is-a closure, which supports `$subsumes` and the `is-a` / `descendent-of` filters on `$expand`.
 
 ## Usage
 

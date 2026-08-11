@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -32,6 +32,8 @@ const string RF2_RELATIONSHIP_PREFIX = "sct2_Relationship_Snapshot_";
 // SNOMED "is a" attribute typeId. Every taxonomic parent link uses this.
 public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
+// Builds a child -> parents map from the Relationship file, keeping only active
+// is-a rows. A concept can have several parents, so values are arrays.
 public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, int]|error {
     map<string[]> parentsByChild = {};
     int rowsRead = 0;
@@ -64,6 +66,9 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
     return [parentsByChild, rowsRead];
 }
 
+// Returns every ancestor of a concept with its shortest distance. Walks the
+// tree level by level, so an ancestor reachable by two paths gets the shorter
+// depth. Excludes the concept itself.
 public isolated function computeAncestorDepths(string code, map<string[]> parentsByChild) returns map<int> {
     map<int> ancestorDepths = {};
 
@@ -78,9 +83,9 @@ public isolated function computeAncestorDepths(string code, map<string[]> parent
             }
             ancestorDepths[ancestor] = depth;
             string[] grandParents = parentsByChild[ancestor] ?: [];
-            foreach string gp in grandParents {
-                if !ancestorDepths.hasKey(gp) {
-                    nextFrontier.push(gp);
+            foreach string grandParent in grandParents {
+                if !ancestorDepths.hasKey(grandParent) {
+                    nextFrontier.push(grandParent);
                 }
             }
         }
@@ -97,6 +102,8 @@ type ConceptDescriptions record {|
     string? caseSignificanceId;
 |};
 
+// Groups active descriptions by concept, splitting them into the fully
+// specified name and the synonyms.
 isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDescriptions>, int]|error {
     map<ConceptDescriptions> index = {};
     int rowsRead = 0;
@@ -176,6 +183,9 @@ isolated function streamTextDefinitionIndex(string filePath) returns [map<string
     return [index, rowsRead];
 }
 
+// Reads the Concept file and joins each row against the description and text
+// definition indexes. Display falls back from synonym to FSN to the code, and
+// definition falls back from the text definition to the FSN.
 isolated function streamConceptImports(string filePath, map<ConceptDescriptions> descIndex, map<string> defIndex) returns [SnomedConceptImport[], int]|error {
     SnomedConceptImport[] result = [];
     int rowsRead = 0;
@@ -190,9 +200,9 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
                 rowsRead += 1;
                 // Import all concepts, active and inactive.
                 string code = cols[0];
-                ConceptDescriptions? cd = descIndex[code];
-                string? fsn = cd?.fsn;
-                string[] synonyms = cd?.synonyms ?: [];
+                ConceptDescriptions? descriptions = descIndex[code];
+                string? fsn = descriptions?.fsn;
+                string[] synonyms = descriptions?.synonyms ?: [];
 
                 string display = synonyms.length() > 0 ? synonyms[0] : (fsn ?: code);
 
@@ -209,7 +219,7 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
                     definitionStatusId: cols[4],
                     fsn: fsn,
                     synonyms: synonyms,
-                    caseSignificanceId: cd?.caseSignificanceId
+                    caseSignificanceId: descriptions?.caseSignificanceId
                 });
             }
         }
@@ -229,6 +239,7 @@ isolated function isHeaderLine(string line) returns boolean {
     return line.startsWith("id\t");
 }
 
+// Trims a value to fit the varchar limit on the concepts table columns.
 public isolated function truncate191(string? value) returns string? {
     if value is () {
         return ();
@@ -239,6 +250,7 @@ public isolated function truncate191(string? value) returns string? {
     return value.substring(0, DB_STRING_COLUMN_LIMIT);
 }
 
+// Converts an RF2 version stamp (YYYYMMDD) into a FHIR date (YYYY-MM-DD).
 public isolated function deriveSnomedDate(string? version) returns string {
     if version is () || version.length() != 8 {
         return "";
@@ -254,6 +266,8 @@ public isolated function findRf2File(string dirPath, string prefix) returns stri
     return error(string `RF2 file with prefix '${prefix}' not found under ${dirPath}`);
 }
 
+// Looks for the file in the given directory first, then recurses into any
+// subdirectories, since RF2 releases nest their files differently.
 isolated function searchRf2File(string dirPath, string prefix) returns string?|error {
     boolean exists = check file:test(dirPath, file:EXISTS);
     if !exists {

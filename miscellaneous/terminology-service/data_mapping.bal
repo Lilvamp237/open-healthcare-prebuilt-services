@@ -15,11 +15,11 @@
 // under the License.
 import terminology_service.store_h2;
 
+import ballerina/log;
 import ballerina/persist;
 import ballerina/sql;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.parser;
-import ballerina/log;
 
 isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts) returns r4:Parameters {
     r4:Parameters parameters = {};

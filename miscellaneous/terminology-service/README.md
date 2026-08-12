@@ -30,6 +30,8 @@ The service exposes the following main endpoints under `/fhir/r4`:
 ### CodeSystem
 
 - `GET /CodeSystem/$lookup` — Lookup a code in a CodeSystem.
+  - Returns `parent` and `child` properties for CodeSystems that store hierarchy, along with the `abstract` and `inactive` flags derived from concept properties.
+
 - `POST /CodeSystem/$lookup` — Lookup with a POST body.
 - `GET /CodeSystem/$subsumes` — Test subsumption relationships.
 - `POST /CodeSystem/$subsumes` — Test subsumption with a POST body.

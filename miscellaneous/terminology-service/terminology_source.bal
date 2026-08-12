@@ -1044,7 +1044,6 @@ isolated function getConceptFlags(r4:uri system, r4:code code, string? version =
     return [isAbstract, isInactive];
 }
 
-
 isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store_h2:Concept|r4:FHIRError {
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(sqlQuery);
     store_h2:Concept[]|error dbConcepts = streamToStoreConcept(conceptStream);

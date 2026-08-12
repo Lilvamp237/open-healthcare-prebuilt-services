@@ -14,6 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import terminology_service.loinc_to_fhir as loinc;
+
 import ballerina/http;
 import ballerina/log;
 import ballerina/regex;
@@ -21,8 +23,6 @@ import ballerina/time;
 import ballerina/uuid;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
-import ballerina/log;
-import terminology_service.loinc_to_fhir as loinc;
 
 final TerminologySource terminology_source = new TerminologySource();
 
@@ -157,6 +157,9 @@ isolated function extractBodyParamValue(map<json> paramItem) returns string? {
     return ();
 }
 
+// Fills in the parts of an expansion the library leaves out: the system on each
+// entry, the abstract and inactive flags, an identifier, and the parameter echo.
+// Also drops inactive concepts when activeOnly or compose.inactive asks for it.
 isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, map<r4:RequestSearchParameter[]> requestParams) returns r4:ValueSet {
     r4:ValueSet mutable = vs.clone();
     r4:ValueSetExpansion? expansion = mutable.expansion;
@@ -239,7 +242,6 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
     }
     return mutable;
 }
-
 
 public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = ()) returns r4:ValueSet|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters = ctx.getRequestSearchParameters();
@@ -444,13 +446,12 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
         effectiveCode = code;
     } else {
         return r4:createFHIRError(
-            "Can not find a CodeSystem",
-            r4:ERROR,
-            r4:INVALID_REQUIRED,
-            diagnostic = "Provide either a 'coding' parameter or 'system' and 'code' parameters",
-            httpStatusCode = http:STATUS_BAD_REQUEST);
+                "Can not find a CodeSystem",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                diagnostic = "Provide either a 'coding' parameter or 'system' and 'code' parameters",
+                httpStatusCode = http:STATUS_BAD_REQUEST);
     }
-
 
     if system is r4:uri {
         r4:CodeSystem|r4:FHIRError csResult = readCodeSystemByUrl(system);
@@ -530,7 +531,22 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
     }
 
     if valueSet is r4:ValueSet && (codingValue is r4:Coding || codingValue is r4:CodeableConcept) {
-        return codesystemConceptsToParameters(check terminology:valueSetLookUp(codingValue, vs = valueSet, terminology = terminology_source));
+        r4:CodeSystemConcept[]|r4:CodeSystemConcept result =
+                check terminology:valueSetLookUp(codingValue, vs = valueSet, terminology = terminology_source);
+
+        r4:uri? effectiveSystem = codingValue is r4:Coding ? codingValue.system : system;
+        r4:code? effectiveCode = codingValue is r4:Coding ? codingValue.code : code;
+
+        r4:CodeSystemConcept? parentConcept = ();
+        r4:CodeSystemConcept[] childConcepts = [];
+        if effectiveSystem is r4:uri && effectiveCode is r4:code {
+            [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+                    getConceptHierarchy(effectiveSystem, effectiveCode, 'version);
+            parentConcept = hierarchy[0];
+            childConcepts = hierarchy[1];
+        }
+
+        return codesystemConceptsToParameters(result, parentConcept = parentConcept, childConcepts = childConcepts);
     }
     return r4:createFHIRError(
             "Invalid request payload",

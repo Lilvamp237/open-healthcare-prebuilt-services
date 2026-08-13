@@ -443,10 +443,28 @@ public isolated class TerminologySource {
                         store_h2:CodeSystem|error filterCs = getStoreCodeSystemByURL(incSystem, inc.'version);
                         if filterCs is store_h2:CodeSystem {
                             foreach r4:ValueSetComposeIncludeFilter f in incFilters {
-                                if f.property == "concept" && (f.op == "is-a" || f.op == "descendent-of") {
-                                    r4:ValueSetExpansionContains[] members = closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
-                                    foreach r4:ValueSetExpansionContains m in members {
-                                        allConcepts.push(m);
+                                match f.op {
+                                    "is-a" | "descendent-of" if f.property == "concept" => {
+                                        r4:ValueSetExpansionContains[] members = hasClosureRows(filterCs.codeSystemId)
+                                            ? closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter)
+                                            : parentWalkDescendants(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
+                                        foreach r4:ValueSetExpansionContains m in members {
+                                            allConcepts.push(m);
+                                        }
+                                    }
+                                    "=" => {
+                                        r4:ValueSetExpansionContains[] members = filterConceptsByProperty(
+                                                filterCs.codeSystemId, f.property, f.value, filter, stringEquals);
+                                        foreach r4:ValueSetExpansionContains m in members {
+                                            allConcepts.push(m);
+                                        }
+                                    }
+                                    "regex" => {
+                                        r4:ValueSetExpansionContains[] members = filterConceptsByProperty(
+                                                filterCs.codeSystemId, f.property, f.value, filter, regexMatches);
+                                        foreach r4:ValueSetExpansionContains m in members {
+                                            allConcepts.push(m);
+                                        }
                                     }
                                 }
                             }
@@ -625,6 +643,153 @@ isolated function closureMembers(int codeSystemId, string anchorCode, boolean in
     }
 
     return members;
+}
+
+// True if this CodeSystem's hierarchy is stored in the closure table (SNOMED)
+isolated function hasClosureRows(int codeSystemId) returns boolean {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT 1 FROM `, escapeToQuery("concept_closure"),
+            ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId} LIMIT 1`);
+    stream<record {}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {}[]|error results = from record {} r in resultStream
+        select r;
+    return results is error ? false : results.length() > 0;
+}
+
+// Finds every descendant of a concept by walking parent links, for
+// CodeSystems that don't have a closure table (e.g. LOINC)
+isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boolean includeSelf, string? textFilter) returns r4:ValueSetExpansionContains[] {
+    r4:ValueSetExpansionContains[] members = [];
+
+    store_h2:Concept|r4:FHIRError anchor = getStoreConceptByCode(codeSystemId, anchorCode);
+    if anchor is r4:FHIRError {
+        return members;
+    }
+
+    if includeSelf {
+        r4:CodeSystemConcept|error anchorConcept = byteToConcept(anchor.concept);
+        if anchorConcept is r4:CodeSystemConcept {
+            boolean passesFilter = true;
+            if textFilter is string {
+                passesFilter = anchorConcept.display is string
+                    && regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>anchorConcept.display).toUpperAscii());
+            }
+            if passesFilter {
+                members.push({code: anchorConcept.code, display: anchorConcept.display, id: anchorConcept.id});
+            }
+        }
+    }
+
+    int[] frontier = [anchor.conceptId];
+    while frontier.length() > 0 {
+        int[] nextFrontier = [];
+        foreach int parentId in frontier {
+            sql:ParameterizedQuery query = sql:queryConcat(
+                    `SELECT * FROM `, escapeToQuery("concepts"),
+                    ` WHERE `, escapeToQuery("parentConceptId"), ` = ${parentId}`,
+                    ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+            stream<store_h2:Concept, persist:Error?> childStream = sClient->queryNativeSQL(query);
+            store_h2:Concept[]|error children = from store_h2:Concept c in childStream
+                select c;
+            if children is error {
+                continue;
+            }
+            foreach store_h2:Concept child in children {
+                nextFrontier.push(child.conceptId);
+
+                r4:CodeSystemConcept|error childConcept = byteToConcept(child.concept);
+                if childConcept is error {
+                    continue;
+                }
+                if textFilter is string {
+                    if childConcept.display is string
+                        && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>childConcept.display).toUpperAscii()) {
+                        continue;
+                    }
+                }
+                members.push({code: childConcept.code, display: childConcept.display, id: childConcept.id});
+            }
+        }
+        frontier = nextFrontier;
+    }
+
+    return members;
+}
+
+// Exact string match, used as the comparator for the `=` filter operator.
+isolated function stringEquals(string actual, string target) returns boolean => actual == target;
+
+// Full-string regex match (Java Pattern semantics), used as the comparator
+// for the `regex` filter operator.
+isolated function regexMatches(string actual, string pattern) returns boolean => regex:matches(actual, pattern);
+
+// Scans a CodeSystem's concepts and keeps the ones matching a filter,
+// using the given comparator (exact match or regex) on a code or property
+isolated function filterConceptsByProperty(int codeSystemId, string property, string value, string? textFilter,
+        isolated function (string actual, string target) returns boolean matcher)
+    returns r4:ValueSetExpansionContains[] {
+    r4:ValueSetExpansionContains[] members = [];
+
+    sql:ParameterizedQuery query = sql:queryConcat(escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
+    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+        select c;
+    if dbConcepts is error {
+        return members;
+    }
+
+    foreach store_h2:Concept dbConcept in dbConcepts {
+        r4:CodeSystemConcept|error concept = byteToConcept(dbConcept.concept);
+        if concept is error {
+            continue;
+        }
+
+        boolean matches = false;
+        if property == "code" {
+            matches = matcher(concept.code, value);
+        } else if concept.property is r4:CodeSystemConceptProperty[] {
+            foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
+                if prop.code != property {
+                    continue;
+                }
+                string? propValue = propertyValueAsString(prop);
+                if propValue is string && matcher(propValue, value) {
+                    matches = true;
+                    break;
+                }
+            }
+        }
+
+        if !matches {
+            continue;
+        }
+        if textFilter is string {
+            if concept.display is string
+            && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
+                continue;
+            }
+        }
+        members.push({code: concept.code, display: concept.display, id: concept.id});
+    }
+
+    return members;
+}
+
+// Returns a concept-property's value as plain text, whatever type it's stored as
+isolated function propertyValueAsString(r4:CodeSystemConceptProperty prop) returns string? {
+    if prop.valueString is string {
+        return <string>prop.valueString;
+    }
+    if prop.valueCode is r4:code {
+        return <string>prop.valueCode;
+    }
+    if prop.valueBoolean is boolean {
+        return prop.valueBoolean.toString();
+    }
+    if prop.valueInteger is int {
+        return prop.valueInteger.toString();
+    }
+    return ();
 }
 
 isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode) returns boolean {
@@ -953,6 +1118,10 @@ isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns 
 // Fetch a concept's direct parent (via parentConceptId FK) and direct children
 // (concepts whose parentConceptId points at this concept). Used to emit `parent`
 // and `child` property entries in $lookup responses.
+//
+// Returns [parent, children] — parent is nil if the concept is a root, children
+// is an empty array if the concept has no descendants. Any DB failure returns
+// [(), []] so the caller can still emit a flat lookup response.
 isolated function getConceptHierarchy(r4:uri system, r4:code code, string? version = ())
         returns [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);

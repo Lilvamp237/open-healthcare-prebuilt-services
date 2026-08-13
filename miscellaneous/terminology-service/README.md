@@ -19,6 +19,9 @@ The service exposes the following main endpoints under `/fhir/r4`:
 
 - `GET /ValueSet/$expand` — Expand a ValueSet.
 - `POST /ValueSet/$expand` — Expand a ValueSet with a POST body.
+  - `ValueSet.compose.include.filter` supports `is-a` / `descendent-of`, `=`, and `regex`.
+  - `activeOnly=true` drops inactive concepts from the expansion and recomputes `expansion.total`.
+
 - `GET /ValueSet/$validate-code` — Validate a code against a ValueSet.
 - `POST /ValueSet/$validate-code` — Validate a code with a POST body.
 - `GET /ValueSet/{id}/$expand` — Expand a ValueSet by ID.

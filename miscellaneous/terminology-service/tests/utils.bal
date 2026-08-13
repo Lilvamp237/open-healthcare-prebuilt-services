@@ -1,4 +1,4 @@
-// Copyright (c) 2023, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -186,3 +186,47 @@ function assertBundleEqual(r4:Bundle expected, r4:Bundle actual) returns boolean
 
     return true;
 }
+
+// Returns the first parameter with the given name, or () if absent.
+function findParam(r4:Parameters params, string name) returns r4:ParametersParameter? {
+    r4:ParametersParameter[]? entries = params.'parameter;
+    if entries is () {
+        return ();
+    }
+    foreach r4:ParametersParameter entry in entries {
+        if entry.name == name {
+            return entry;
+        }
+    }
+    return ();
+}
+
+// Returns every parameter with the given name.
+function findAllParams(r4:Parameters params, string name) returns r4:ParametersParameter[] {
+    r4:ParametersParameter[] matched = [];
+    r4:ParametersParameter[]? entries = params.'parameter;
+    if entries is () {
+        return matched;
+    }
+    foreach r4:ParametersParameter entry in entries {
+        if entry.name == name {
+            matched.push(entry);
+        }
+    }
+    return matched;
+}
+
+// Returns the value of a named sub-part inside a property parameter.
+function findPart(r4:ParametersParameter param, string partName) returns r4:ParametersParameter? {
+    r4:ParametersParameter[]? parts = param.part;
+    if parts is () {
+        return ();
+    }
+    foreach r4:ParametersParameter part in parts {
+        if part.name == partName {
+            return part;
+        }
+    }
+    return ();
+}
+

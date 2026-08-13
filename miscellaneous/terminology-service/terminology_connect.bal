@@ -217,7 +217,44 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         }
     }
 
+    // Drop inactive concepts when the client asked for activeOnly or the ValueSet says so
+    boolean requestActiveOnly = false;
+    r4:RequestSearchParameter[]? activeOnlyParam = requestParams["activeOnly"];
+    if activeOnlyParam is r4:RequestSearchParameter[] && activeOnlyParam.length() > 0 {
+        requestActiveOnly = activeOnlyParam[0].value == "true";
+    }
+
+    boolean composeExcludesInactive = false;
+    if sourceVs is r4:ValueSet {
+        r4:ValueSetCompose? sourceCompose = sourceVs.compose;
+        if sourceCompose is r4:ValueSetCompose && sourceCompose.inactive is boolean
+            && !<boolean>sourceCompose.inactive {
+            composeExcludesInactive = true;
+        }
+    }
+
+    if requestActiveOnly || composeExcludesInactive {
+        r4:ValueSetExpansionContains[] filtered = [];
+        foreach var entry in contains {
+            if entry.inactive is boolean && <boolean>entry.inactive {
+                continue;
+            }
+            filtered.push(entry);
+        }
+        expansion.contains = filtered;
+        expansion.total = filtered.length();
+    }
+
     r4:ValueSetExpansionParameter[] expParams = [];
+
+    // Echo back the requested count if client sent one
+    r4:RequestSearchParameter[]? countParam = requestParams["count"];
+    if countParam is r4:RequestSearchParameter[] && countParam.length() > 0 {
+        int|error countVal = int:fromString(countParam[0].value);
+        if countVal is int {
+            expParams.push({name: "count", valueInteger: countVal});
+        }
+    }
 
     r4:RequestSearchParameter[]? excludeNestedParam = requestParams["excludeNested"];
     if excludeNestedParam is r4:RequestSearchParameter[] && excludeNestedParam.length() > 0 {

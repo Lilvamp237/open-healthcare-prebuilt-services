@@ -210,6 +210,11 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
     return parameters;
 }
 
+// Same value as modules/snomed_to_fhir/types.bal's DESIGNATION_INACTIVE_EXTENSION_URL.
+// Kept as a private literal here rather than importing snomed_to_fhir, since this
+// builder is generic across every ingest source, not SNOMED-specific.
+const string DESIGNATION_INACTIVE_EXTENSION_URL = "https://wso2.org/fhir/StructureDefinition/designation-inactive";
+
 isolated function designationToParameter(r4:CodeSystemConceptDesignation designation) returns r4:ParametersParameter {
     r4:ParametersParameter param = {name: "designation"};
     r4:ParametersParameter[] part = [];
@@ -218,11 +223,22 @@ isolated function designationToParameter(r4:CodeSystemConceptDesignation designa
         part.push({name: "language", valueCode: designation.language});
     }
 
-    part.push({name: "value", valueString: designation.value});
-
     if designation.use is r4:Coding {
         part.push({name: "use", valueCoding: designation.use});
     }
+
+    r4:Extension[]? extensions = designation.extension;
+    if extensions is r4:Extension[] {
+        foreach var ext in extensions {
+            if ext is r4:BooleanExtension && ext.url == DESIGNATION_INACTIVE_EXTENSION_URL && ext.valueBoolean {
+                part.push({name: "status", valueCode: "inactive"});
+                break;
+            }
+        }
+    }
+
+    part.push({name: "value", valueString: designation.value});
+
     param.part = part;
 
     return param;

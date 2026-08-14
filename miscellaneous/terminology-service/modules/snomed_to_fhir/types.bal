@@ -25,6 +25,11 @@ public const string SNOMED_PUBLISHER = "SNOMED International";
 public const string SNOMED_FSN_TYPE_ID = "900000000000003001";
 public const string SNOMED_SYNONYM_TYPE_ID = "900000000000013009";
 
+// Marks a designation built from an inactive (historical) RF2 description row.
+// $lookup projects this as a status: inactive sub-part rather than dropping
+// the designation entirely.
+public const string DESIGNATION_INACTIVE_EXTENSION_URL = "https://wso2.org/fhir/StructureDefinition/designation-inactive";
+
 public type SnomedConceptImport record {|
     string code;
     string display;
@@ -35,6 +40,7 @@ public type SnomedConceptImport record {|
     string definitionStatusId;
     string? fsn;
     string[] synonyms;
+    string[] inactiveSynonyms;
     string? caseSignificanceId;
 |};
 

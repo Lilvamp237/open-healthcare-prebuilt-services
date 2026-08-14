@@ -159,6 +159,18 @@ isolated function codeSystemConceptPropertyToParameter(r4:CodeSystemConceptPrope
             {name: "code", valueCode: property.code},
             {name: "value", valueDecimal: property.valueDecimal}
         );
+    } else if property.valueDateTime is string {
+        part.push(
+            {name: "code", valueCode: property.code},
+            {name: "value", valueDateTime: property.valueDateTime}
+        );
+    }
+
+    if property.code == "module" && property.valueCode is r4:code {
+        string? moduleDesc = snomedModuleDisplay(<string>property.valueCode);
+        if moduleDesc is string {
+            part.push({name: "description", valueString: moduleDesc});
+        }
     }
 
     if part.length() > 0 {
@@ -166,6 +178,17 @@ isolated function codeSystemConceptPropertyToParameter(r4:CodeSystemConceptPrope
     }
 
     return param;
+}
+
+// Display names for the handful of SNOMED module SCTIDs seen in practice. Unknown
+// modules (extension-specific ones especially) are left without a description
+// sub-part rather than guessed at.
+isolated function snomedModuleDisplay(string moduleId) returns string? {
+    map<string> moduleDisplays = {
+        "900000000000207008": "SNOMED CT core module",
+        "900000000000012004": "SNOMED CT model component module"
+    };
+    return moduleDisplays[moduleId];
 }
 
 isolated function extractZipFile(string dirPath) returns error? {

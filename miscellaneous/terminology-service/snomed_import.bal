@@ -193,12 +193,22 @@ isolated function replacePriorLoads(string url, string 'version) returns int|r4:
     return ids.length();
 }
 
-// Deletes a CodeSystem and everything under it, in dependency order:
-// closure rows, then concepts, then the CodeSystem itself.
+// Deletes a CodeSystem and everything under it, in dependency order: closure
+// rows, then any valueset_compose_include_concepts rows pointing at this
+// CodeSystem's concepts (write-only bookkeeping table - $expand/$validate-code/
+// etc. all resolve concepts via the stored ValueSet JSON, not this table, so
+// dropping these rows has no functional effect on existing ValueSets), then
+// concepts, then the CodeSystem itself.
 isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
     sql:ParameterizedQuery delClosure = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
     _ = check sClient->executeNativeSQL(delClosure);
+
+    sql:ParameterizedQuery delComposeIncludeConcepts = sql:queryConcat(
+            `DELETE FROM `, escapeToQuery("valueset_compose_include_concepts"),
+            ` WHERE `, escapeToQuery("conceptConceptId"), ` IN (SELECT `, escapeToQuery("conceptId"),
+            ` FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId})`);
+    _ = check sClient->executeNativeSQL(delComposeIncludeConcepts);
 
     sql:ParameterizedQuery delConcepts = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);

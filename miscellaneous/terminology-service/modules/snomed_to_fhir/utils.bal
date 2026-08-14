@@ -99,11 +99,14 @@ public isolated function computeAncestorDepths(string code, map<string[]> parent
 type ConceptDescriptions record {|
     string? fsn;
     string[] synonyms;
+    string[] inactiveSynonyms;
     string? caseSignificanceId;
 |};
 
-// Groups active descriptions by concept, splitting them into the fully
-// specified name and the synonyms.
+// Groups descriptions by concept, splitting them into the fully specified
+// name, the active synonyms, and the inactive (historical) synonyms. FSN is
+// only tracked from active rows - inactive FSNs are rare and dropping them
+// keeps the "first active FSN wins" rule simple.
 isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDescriptions>, int]|error {
     map<ConceptDescriptions> index = {};
     int rowsRead = 0;
@@ -116,27 +119,30 @@ isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDe
             string[] cols = regex:split(line, "\\t");
             if cols.length() >= DESCRIPTION_COLUMN_COUNT {
                 rowsRead += 1;
-                if cols[2] == "1" {
-                    string conceptId = cols[4];
-                    string typeId = cols[6];
-                    string term = cols[7];
-                    string caseSig = cols[8];
-                    ConceptDescriptions acc = index[conceptId] ?: {fsn: (), synonyms: [], caseSignificanceId: ()};
-                    if typeId == SNOMED_FSN_TYPE_ID {
-                        if acc.fsn is () {
-                            acc.fsn = term;
-                        }
-                        if acc.caseSignificanceId is () {
-                            acc.caseSignificanceId = caseSig;
-                        }
-                    } else if typeId == SNOMED_SYNONYM_TYPE_ID {
+                boolean active = cols[2] == "1";
+                string conceptId = cols[4];
+                string typeId = cols[6];
+                string term = cols[7];
+                string caseSig = cols[8];
+                ConceptDescriptions acc = index[conceptId] ?: {fsn: (), synonyms: [], inactiveSynonyms: [], caseSignificanceId: ()};
+                if typeId == SNOMED_FSN_TYPE_ID && active {
+                    if acc.fsn is () {
+                        acc.fsn = term;
+                    }
+                    if acc.caseSignificanceId is () {
+                        acc.caseSignificanceId = caseSig;
+                    }
+                } else if typeId == SNOMED_SYNONYM_TYPE_ID {
+                    if active {
                         acc.synonyms.push(term);
                         if acc.caseSignificanceId is () {
                             acc.caseSignificanceId = caseSig;
                         }
+                    } else {
+                        acc.inactiveSynonyms.push(term);
                     }
-                    index[conceptId] = acc;
                 }
+                index[conceptId] = acc;
             }
         }
         next = lineStream.next();
@@ -184,8 +190,10 @@ isolated function streamTextDefinitionIndex(string filePath) returns [map<string
 }
 
 // Reads the Concept file and joins each row against the description and text
-// definition indexes. Display falls back from synonym to FSN to the code, and
-// definition falls back from the text definition to the FSN.
+// definition indexes. Display falls back from synonym to FSN to the code.
+// definition is left absent unless the concept has a real text definition —
+// the FSN is a display label, not a clinical definition, and is already
+// carried separately as a designation.
 isolated function streamConceptImports(string filePath, map<ConceptDescriptions> descIndex, map<string> defIndex) returns [SnomedConceptImport[], int]|error {
     SnomedConceptImport[] result = [];
     int rowsRead = 0;
@@ -203,11 +211,11 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
                 ConceptDescriptions? descriptions = descIndex[code];
                 string? fsn = descriptions?.fsn;
                 string[] synonyms = descriptions?.synonyms ?: [];
+                string[] inactiveSynonyms = descriptions?.inactiveSynonyms ?: [];
 
                 string display = synonyms.length() > 0 ? synonyms[0] : (fsn ?: code);
 
-                string? textDef = defIndex[code];
-                string? definition = textDef is string ? textDef : fsn;
+                string? definition = defIndex[code];
 
                 result.push({
                     code: code,
@@ -219,6 +227,7 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
                     definitionStatusId: cols[4],
                     fsn: fsn,
                     synonyms: synonyms,
+                    inactiveSynonyms: inactiveSynonyms,
                     caseSignificanceId: descriptions?.caseSignificanceId
                 });
             }
@@ -330,7 +339,7 @@ public isolated function snomedConceptImportToR4(SnomedConceptImport item) retur
             use: {
                 system: SNOMED_SYSTEM_URL,
                 code: SNOMED_FSN_TYPE_ID,
-                display: "Fully specified name"
+                display: "Fully specified name (core metadata concept)"
             }
         });
     }
@@ -342,16 +351,34 @@ public isolated function snomedConceptImportToR4(SnomedConceptImport item) retur
             use: {
                 system: SNOMED_SYSTEM_URL,
                 code: SNOMED_SYNONYM_TYPE_ID,
-                display: "Synonym"
+                display: "Synonym (core metadata concept)"
             }
+        });
+    }
+
+    // Historical synonyms (active=0 in RF2) are kept as designations rather than
+    // dropped, tagged inactive via extension so designationToParameter can
+    // project a status: inactive sub-part in the $lookup response.
+    foreach string synonym in item.inactiveSynonyms {
+        designations.push({
+            language: "en",
+            value: synonym,
+            use: {
+                system: SNOMED_SYSTEM_URL,
+                code: SNOMED_SYNONYM_TYPE_ID,
+                display: "Synonym (core metadata concept)"
+            },
+            extension: [
+                {url: DESIGNATION_INACTIVE_EXTENSION_URL, valueBoolean: true}
+            ]
         });
     }
 
     r4:CodeSystemConceptProperty[] properties = [
         {code: "active", valueBoolean: item.active == "1"},
-        {code: "moduleId", valueString: item.moduleId},
+        {code: "module", valueCode: item.moduleId},
         {code: "definitionStatusId", valueString: item.definitionStatusId},
-        {code: "effectiveTime", valueString: item.effectiveTime}
+        {code: "effectiveTime", valueDateTime: deriveSnomedDate(item.effectiveTime)}
     ];
 
     r4:CodeSystemConcept concept = {

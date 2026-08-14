@@ -31,6 +31,7 @@ public function testSnomedConceptImportToR4EmitsDesignationsAndProperties() {
         definitionStatusId: "900000000000074008",
         fsn: "Test concept (finding)",
         synonyms: ["Test concept"],
+        inactiveSynonyms: [],
         caseSignificanceId: "900000000000448009"
     };
 
@@ -110,7 +111,8 @@ public function testStreamConceptImportsJoinsDescriptions() returns error? {
     [map<ConceptDescriptions>, int] descResult = check streamDescriptionIndex(
             "modules/snomed_to_fhir/tests/resources/sct2_Description_Snapshot-en_INT_20260401.txt"
     );
-    // Empty text definition map, so definition falls back to the FSN.
+    // Empty text definition map, so definition stays absent — the FSN is a
+    // display label, not a clinical definition, and is not used as a fallback.
     [SnomedConceptImport[], int] conceptResult = check streamConceptImports(
             "modules/snomed_to_fhir/tests/resources/sct2_Concept_Snapshot_INT_20260401.txt",
             descResult[0],
@@ -123,7 +125,7 @@ public function testStreamConceptImportsJoinsDescriptions() returns error? {
     test:assertEquals(imports[0].code, "123456");
     // Synonym wins over FSN for display.
     test:assertEquals(imports[0].display, "Test concept");
-    test:assertEquals(imports[0].definition, "Test concept (finding)");
+    test:assertEquals(imports[0].definition, ());
     test:assertEquals(imports[0].synonyms.length(), 1);
 }
 

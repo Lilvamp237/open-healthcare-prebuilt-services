@@ -1287,17 +1287,39 @@ isolated function extractConceptsFromCodeSystem(r4:CodeSystem codeSystem, int co
     }
 }
 
-isolated function extractConceptsFromCodeSystemRecursive(r4:CodeSystemConcept var_concept, int codeSystemId, int? parentId = ()) {
+isolated function extractConceptsFromCodeSystemRecursive(r4:CodeSystemConcept var_concept, int codeSystemId, int? parentId = (), int[] ancestorPath = []) {
     int|error result = saveCodeSystemConcept(var_concept, codeSystemId, parentId);
     if result is error {
         log:printError("Error while saving concept: " + result.message());
+        return;
+    }
+    int conceptDbId = result;
+
+    // Emit concept_closure rows so is-a / descendent-of / child-of queries can hit
+    // an indexed lookup instead of the O(N) parentConceptId walk. Every concept
+    // gets a depth-0 self row plus one row per ancestor in the current recursion
+    // path (depth = distance up the tree). Mirrors what the SNOMED import path
+    // does via writeClosure, so both ingest paths converge on the same shape.
+    ClosureRow[] closureRows = [{ancestor: conceptDbId, descendant: conceptDbId, depth: 0}];
+    foreach int i in 0 ..< ancestorPath.length() {
+        closureRows.push({
+            ancestor: ancestorPath[i],
+            descendant: conceptDbId,
+            depth: ancestorPath.length() - i
+        });
+    }
+    int|r4:FHIRError flushed = flushClosureBatch(closureRows, codeSystemId);
+    if flushed is r4:FHIRError {
+        log:printError("Error writing closure rows for concept " + var_concept.code + ": " + flushed.message());
     }
 
     if var_concept.concept !is () {
         r4:CodeSystemConcept[]? concepts = var_concept.concept;
         if concepts != () && concepts.length() > 0 {
+            int[] childPath = ancestorPath.clone();
+            childPath.push(conceptDbId);
             foreach var subConcept in concepts {
-                _ = start extractConceptsFromCodeSystemRecursive(subConcept.clone(), codeSystemId, (result is int) ? result : ());
+                _ = start extractConceptsFromCodeSystemRecursive(subConcept.clone(), codeSystemId, conceptDbId, childPath.clone());
             }
         }
     }

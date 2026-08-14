@@ -26,14 +26,59 @@ isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts) returns
 
     r4:CodeSystemConcept[] r4Concepts = [];
     foreach LoincConcept loinc in loincConcepts {
+        // LONG_COMMON_NAME is the human-readable clinical display (e.g. "Hospice care
+        // Note"); COMPONENT is just one axis of the 6-part LOINC name (e.g. "Note") and
+        // is meaningless as a display on its own. Fall back to COMPONENT only when
+        // LONG_COMMON_NAME is absent.
+        string? longCommonName = loinc?.LONG_COMMON_NAME;
+        string display = longCommonName is string && longCommonName != "" ? longCommonName : loinc.COMPONENT;
+
         r4:CodeSystemConcept concept = {
             code: loinc.LOINC_NUM,
-            display: loinc.COMPONENT,
+            display: display,
+            designation: getDesignations(loinc),
             property: getProperties(loinc)
         };
         r4Concepts.push(concept);
     }
     return r4Concepts;
+}
+
+// Builds designations from LOINC's display-name variants. Each is tagged with
+// its LOINC field name as the designation's use.code so a $lookup consumer can
+// tell which variant (long common name, short name, consumer-friendly name) a
+// given entry is.
+isolated function getDesignations(LoincConcept loinc) returns r4:CodeSystemConceptDesignation[] {
+    r4:CodeSystemConceptDesignation[] designations = [];
+
+    string? longCommonName = loinc?.LONG_COMMON_NAME;
+    if longCommonName is string && longCommonName != "" {
+        designations.push({
+            language: "en-US",
+            value: longCommonName,
+            use: {system: "http://loinc.org", code: "LONG_COMMON_NAME"}
+        });
+    }
+
+    string? shortName = loinc?.SHORTNAME;
+    if shortName is string && shortName != "" {
+        designations.push({
+            language: "en-US",
+            value: shortName,
+            use: {system: "http://loinc.org", code: "SHORTNAME"}
+        });
+    }
+
+    string? consumerName = loinc?.CONSUMER_NAME;
+    if consumerName is string && consumerName != "" {
+        designations.push({
+            language: "en-US",
+            value: consumerName,
+            use: {system: "http://loinc.org", code: "CONSUMER_NAME"}
+        });
+    }
+
+    return designations;
 }
 
 // Function to extract all properties dynamically from a LoincConcept
@@ -59,20 +104,14 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     if loinc?.CLASS is string && loinc?.CLASS != "" {
         properties.push({code: "CLASS", valueString: loinc?.CLASS});
     }
-    if loinc?.VersionLastChanged is string && loinc?.VersionLastChanged != "" {
-        properties.push({code: "VersionLastChanged", valueString: loinc?.VersionLastChanged});
-    }
-    if loinc?.CHNG_TYPE is string && loinc?.CHNG_TYPE != "" {
-        properties.push({code: "CHNG_TYPE", valueString: loinc?.CHNG_TYPE});
-    }
-    if loinc?.DefinitionDescription is string && loinc?.DefinitionDescription != "" {
-        properties.push({code: "DefinitionDescription", valueString: loinc?.DefinitionDescription});
-    }
-    if loinc?.STATUS is string && loinc?.STATUS != "" {
-        properties.push({code: "STATUS", valueString: loinc?.STATUS});
-    }
-    if loinc?.CONSUMER_NAME is string && loinc?.CONSUMER_NAME != "" {
-        properties.push({code: "CONSUMER_NAME", valueString: loinc?.CONSUMER_NAME});
+    // STATUS mapped to the shared "status" property code (lowercased LOINC value:
+    // active/trial/discouraged/deprecated) so codesystemConceptsToParameters' existing
+    // inactive-derivation (status == retired/deprecated) picks up deprecated LOINC
+    // codes the same way it already does for SNOMED. discouraged/trial are not
+    // inactive - those codes are still valid for use, just not preferred.
+    string? status = loinc?.STATUS;
+    if status is string && status != "" {
+        properties.push({code: "status", valueCode: status.toLowerAscii()});
     }
     if loinc?.CLASSTYPE is string && loinc?.CLASSTYPE != "" {
         properties.push({code: "CLASSTYPE", valueString: loinc?.CLASSTYPE});
@@ -95,9 +134,6 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     if loinc?.RELATEDNAMES2 is string && loinc?.RELATEDNAMES2 != "" {
         properties.push({code: "RELATEDNAMES2", valueString: loinc?.RELATEDNAMES2});
     }
-    if loinc?.SHORTNAME is string && loinc?.SHORTNAME != "" {
-        properties.push({code: "SHORTNAME", valueString: loinc?.SHORTNAME});
-    }
     if loinc?.ORDER_OBS is string && loinc?.ORDER_OBS != "" {
         properties.push({code: "ORDER_OBS", valueString: loinc?.ORDER_OBS});
     }
@@ -109,9 +145,6 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     }
     if loinc?.EXAMPLE_UNITS is string && loinc?.EXAMPLE_UNITS != "" {
         properties.push({code: "EXAMPLE_UNITS", valueString: loinc?.EXAMPLE_UNITS});
-    }
-    if loinc?.LONG_COMMON_NAME is string && loinc?.LONG_COMMON_NAME != "" {
-        properties.push({code: "LONG_COMMON_NAME", valueString: loinc?.LONG_COMMON_NAME});
     }
     if loinc?.EXAMPLE_UCUM_UNITS is string && loinc?.EXAMPLE_UCUM_UNITS != "" {
         properties.push({code: "EXAMPLE_UCUM_UNITS", valueString: loinc?.EXAMPLE_UCUM_UNITS});
@@ -125,17 +158,8 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     if loinc?.CHANGE_REASON_PUBLIC is string && loinc?.CHANGE_REASON_PUBLIC != "" {
         properties.push({code: "CHANGE_REASON_PUBLIC", valueString: loinc?.CHANGE_REASON_PUBLIC});
     }
-    if loinc?.COMMON_TEST_RANK is string && loinc?.COMMON_TEST_RANK != "" {
-        properties.push({code: "COMMON_TEST_RANK", valueString: loinc?.COMMON_TEST_RANK});
-    }
-    if loinc?.COMMON_ORDER_RANK is string && loinc?.COMMON_ORDER_RANK != "" {
-        properties.push({code: "COMMON_ORDER_RANK", valueString: loinc?.COMMON_ORDER_RANK});
-    }
     if loinc?.HL7_ATTACHMENT_STRUCTURE is string && loinc?.HL7_ATTACHMENT_STRUCTURE != "" {
         properties.push({code: "HL7_ATTACHMENT_STRUCTURE", valueString: loinc?.HL7_ATTACHMENT_STRUCTURE});
-    }
-    if loinc?.EXTERNAL_COPYRIGHT_LINK is string && loinc?.EXTERNAL_COPYRIGHT_LINK != "" {
-        properties.push({code: "EXTERNAL_COPYRIGHT_LINK", valueString: loinc?.EXTERNAL_COPYRIGHT_LINK});
     }
     if loinc?.PanelType is string && loinc?.PanelType != "" {
         properties.push({code: "PanelType", valueString: loinc?.PanelType});
@@ -146,14 +170,8 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     if loinc?.AssociatedObservations is string && loinc?.AssociatedObservations != "" {
         properties.push({code: "AssociatedObservations", valueString: loinc?.AssociatedObservations});
     }
-    if loinc?.VersionFirstReleased is string && loinc?.VersionFirstReleased != "" {
-        properties.push({code: "VersionFirstReleased", valueString: loinc?.VersionFirstReleased});
-    }
     if loinc?.ValidHL7AttachmentRequest is string && loinc?.ValidHL7AttachmentRequest != "" {
         properties.push({code: "ValidHL7AttachmentRequest", valueString: loinc?.ValidHL7AttachmentRequest});
-    }
-    if loinc?.DisplayName is string && loinc?.DisplayName != "" {
-        properties.push({code: "DisplayName", valueString: loinc?.DisplayName});
     }
 
     return properties;

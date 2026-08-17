@@ -21,10 +21,32 @@ import ballerina/sql;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.parser;
 
-isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts, r4:CodeSystem? cs = (), r4:CodeSystemConcept? parentConcept = (), r4:CodeSystemConcept[] childConcepts = []) returns r4:Parameters {
+// A resolved non-hierarchical concept relationship (SNOMED clinical attributes:
+// Finding site, Associated morphology, etc) for $lookup property projection.
+// typeDisplay/valueDisplay are omitted when the type/destination concept isn't
+// found (e.g. only a subset of the CodeSystem was imported).
+type ConceptAttributeRelationship record {|
+    string typeCode;
+    string? typeDisplay;
+    string valueCode;
+    string? valueDisplay;
+|};
+
+isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts, r4:CodeSystem? cs = (), r4:CodeSystemConcept? parentConcept = (), r4:CodeSystemConcept[] childConcepts = [], ConceptAttributeRelationship[] attributeRelationships = []) returns r4:Parameters {
+    // Per the FHIR $lookup convention, "name" is normally the CodeSystem's
+    // computer-friendly name. But when version is itself a canonical URI (the
+    // convention SNOMED CT uses to disambiguate editions - see
+    // SNOMED_CORE_MODULE_ID in modules/snomed_to_fhir/types.bal) it takes
+    // precedence, emitting the versioned canonical reference url|version instead.
     string csName = "";
     if cs is r4:CodeSystem {
-        csName = cs.name ?: (cs.url ?: "");
+        string? csVersion = cs.version;
+        string? csUrl = cs.url;
+        if csVersion is string && csVersion.startsWith("http") && csUrl is string {
+            csName = csUrl + "|" + csVersion;
+        } else {
+            csName = cs.name ?: (cs.url ?: "");
+        }
     }
     r4:Parameters parameters = {};
     if concepts is r4:CodeSystemConcept {
@@ -95,6 +117,20 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
             }
             childPart.push({name: "value", valueCode: child.code});
             (<r4:ParametersParameter[]>parameters.'parameter).push({name: "property", part: childPart});
+        }
+
+        foreach var rel in attributeRelationships {
+            r4:ParametersParameter[] relPart = [
+                {name: "code", valueCode: rel.typeCode},
+                {name: "value", valueCode: rel.valueCode}
+            ];
+            if rel.valueDisplay is string {
+                relPart.push({name: "description", valueString: <string>rel.valueDisplay});
+            }
+            if rel.typeDisplay is string {
+                relPart.push({name: "code-display", valueString: <string>rel.typeDisplay});
+            }
+            (<r4:ParametersParameter[]>parameters.'parameter).push({name: "property", part: relPart});
         }
 
         if concepts.definition is string {
@@ -179,6 +215,20 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
                 }
                 childPart.push({name: "value", valueCode: child.code});
                 (<r4:ParametersParameter[]>p).push({name: "property", part: childPart});
+            }
+
+            foreach var rel in attributeRelationships {
+                r4:ParametersParameter[] relPart = [
+                    {name: "code", valueCode: rel.typeCode},
+                    {name: "value", valueCode: rel.valueCode}
+                ];
+                if rel.valueDisplay is string {
+                    relPart.push({name: "description", valueString: <string>rel.valueDisplay});
+                }
+                if rel.typeDisplay is string {
+                    relPart.push({name: "code-display", valueString: <string>rel.typeDisplay});
+                }
+                (<r4:ParametersParameter[]>p).push({name: "property", part: relPart});
             }
 
             if item.definition is string {

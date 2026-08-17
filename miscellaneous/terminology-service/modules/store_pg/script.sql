@@ -3,6 +3,7 @@
 -- This file is an auto-generated file by Ballerina persistence layer for model.
 -- Please verify the generated scripts and execute them against the target DB server.
 
+DROP TABLE IF EXISTS "concept_relationships";
 DROP TABLE IF EXISTS "concept_closure";
 DROP TABLE IF EXISTS "valueset_compose_include_value_sets";
 DROP TABLE IF EXISTS "valueset_compose_include_concepts";
@@ -90,6 +91,17 @@ CREATE TABLE "concept_closure" (
 	PRIMARY KEY("closureId")
 );
 
+-- SNOMED CT non-is-a clinical attribute relationships (Finding site, Associated
+-- morphology, etc), from Relationship rows where typeId != 116680003.
+CREATE TABLE "concept_relationships" (
+	"relationshipId"  SERIAL,
+	"sourceConceptId" INT NOT NULL,
+	"typeId" VARCHAR(191) NOT NULL,
+	"destinationConceptId" INT NOT NULL,
+	"codeSystemId" INT NOT NULL,
+	PRIMARY KEY("relationshipId")
+);
+
 -- CodeSystem/$lookup, CodeSystem/$subsumes, CodeSystem read-by-id, CodeSystem search
 CREATE INDEX "idx_codesystems_id" ON "codesystems"("id");
 CREATE INDEX "idx_codesystems_url" ON "codesystems"("url");
@@ -125,3 +137,5 @@ CREATE INDEX "idx_vcivs_valueset_id" ON "valueset_compose_include_value_sets"("v
 CREATE INDEX "idx_closure_ancestor" ON "concept_closure"("codeSystemId", "ancestorConceptId");
 CREATE INDEX "idx_closure_descendant" ON "concept_closure"("codeSystemId", "descendantConceptId");
 CREATE INDEX "idx_closure_pair" ON "concept_closure"("ancestorConceptId", "descendantConceptId");
+
+CREATE INDEX "idx_relationships_source" ON "concept_relationships"("codeSystemId", "sourceConceptId");

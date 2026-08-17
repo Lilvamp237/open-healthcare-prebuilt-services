@@ -13,13 +13,47 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+import ballerina/file;
+import ballerina/regex;
 import ballerinax/health.fhir.r4;
 
 public const string FHIR_LOINC_FILE_NAME = "/loinc-codesystem.json";
-const string LOINC_CSV_FILE_PATH = "/LoincTable/Loinc.csv";
+
+// Finds a directory with the given exact name anywhere under dirPath: checks
+// dirPath's immediate children first, then recurses. LOINC releases are
+// distributed as LoincTable/ and AccessoryFiles/PartFile/ either bare at the
+// zip root, or wrapped in the release folder LOINC ships them in (e.g.
+// "Loinc_2.82/") - this tolerates either without the caller needing to know
+// which.
+isolated function findDirNamed(string dirPath, string targetName) returns string?|error {
+    boolean exists = check file:test(dirPath, file:EXISTS);
+    if !exists {
+        return ();
+    }
+    file:MetaData[] entries = check file:readDir(dirPath);
+    foreach file:MetaData entry in entries {
+        if entry.dir && getLoincBaseName(entry.absPath) == targetName {
+            return entry.absPath;
+        }
+    }
+    foreach file:MetaData entry in entries {
+        if entry.dir {
+            string? nested = check findDirNamed(entry.absPath, targetName);
+            if nested is string {
+                return nested;
+            }
+        }
+    }
+    return ();
+}
+
+isolated function getLoincBaseName(string path) returns string {
+    string[] parts = regex:split(path, "[\\\\/]");
+    return parts[parts.length() - 1];
+}
 
 // Mapping function
-isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts) returns r4:CodeSystemConcept[] {
+isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts, map<map<LoincPartRef>> partIndex) returns r4:CodeSystemConcept[] {
     if loincConcepts is null {
         return [];
     }
@@ -33,11 +67,12 @@ isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts) returns
         string? longCommonName = loinc?.LONG_COMMON_NAME;
         string display = longCommonName is string && longCommonName != "" ? longCommonName : loinc.COMPONENT;
 
+        map<LoincPartRef> parts = partIndex[loinc.LOINC_NUM] ?: {};
         r4:CodeSystemConcept concept = {
             code: loinc.LOINC_NUM,
             display: display,
             designation: getDesignations(loinc),
-            property: getProperties(loinc)
+            property: getProperties(loinc, parts)
         };
         r4Concepts.push(concept);
     }
@@ -81,35 +116,49 @@ isolated function getDesignations(LoincConcept loinc) returns r4:CodeSystemConce
     return designations;
 }
 
+// Pushes one LOINC axis property: LP-code (valueCode) when the Part File
+// resolved one, otherwise the raw CSV text (valueString) as before. Omitted
+// entirely when neither is available.
+isolated function pushAxisProperty(r4:CodeSystemConceptProperty[] properties, string code, string? rawValue, LoincPartRef? part) {
+    if part is LoincPartRef {
+        properties.push({code: code, valueCode: part.partNumber});
+    } else if rawValue is string && rawValue != "" {
+        properties.push({code: code, valueString: rawValue});
+    }
+}
+
 // Function to extract all properties dynamically from a LoincConcept
-isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConceptProperty[] {
+isolated function getProperties(LoincConcept loinc, map<LoincPartRef> parts) returns r4:CodeSystemConceptProperty[] {
     r4:CodeSystemConceptProperty[] properties = [];
 
-    // Manually map each field in the LoincConcept record
-    if loinc?.PROPERTY is string && loinc?.PROPERTY != "" {
-        properties.push({code: "PROPERTY", valueString: loinc?.PROPERTY});
+    // The six LOINC axes are themselves LOINC Part concepts (LP-codes). Emit the
+    // LP-code as valueCode when the Part File resolved one for this term; fall
+    // back to the raw CSV text (the old behaviour) when it didn't, e.g. the Part
+    // File wasn't supplied at upload, or this term/axis isn't covered by it.
+    // COMPONENT has no raw-text fallback since it was never emitted as a
+    // property before - it's only ever available via the Part File.
+    LoincPartRef? componentPart = parts["COMPONENT"];
+    if componentPart is LoincPartRef {
+        properties.push({code: "COMPONENT", valueCode: componentPart.partNumber});
     }
-    if loinc?.TIME_ASPCT is string && loinc?.TIME_ASPCT != "" {
-        properties.push({code: "TIME_ASPCT", valueString: loinc?.TIME_ASPCT});
-    }
-    if loinc?.SYSTEM is string && loinc?.SYSTEM != "" {
-        properties.push({code: "SYSTEM", valueString: loinc?.SYSTEM});
-    }
-    if loinc?.SCALE_TYP is string && loinc?.SCALE_TYP != "" {
-        properties.push({code: "SCALE_TYP", valueString: loinc?.SCALE_TYP});
-    }
-    if loinc?.METHOD_TYP is string && loinc?.METHOD_TYP != "" {
-        properties.push({code: "METHOD_TYP", valueString: loinc?.METHOD_TYP});
-    }
-    if loinc?.CLASS is string && loinc?.CLASS != "" {
-        properties.push({code: "CLASS", valueString: loinc?.CLASS});
-    }
-    // STATUS mapped to the shared "status" property code (lowercased LOINC value:
-    // active/trial/discouraged/deprecated) so codesystemConceptsToParameters' existing
-    // inactive-derivation (status == retired/deprecated) picks up deprecated LOINC
-    // codes the same way it already does for SNOMED. discouraged/trial are not
-    // inactive - those codes are still valid for use, just not preferred.
+    pushAxisProperty(properties, "PROPERTY", loinc?.PROPERTY, parts["PROPERTY"]);
+    pushAxisProperty(properties, "TIME_ASPCT", loinc?.TIME_ASPCT, parts["TIME"]);
+    pushAxisProperty(properties, "SYSTEM", loinc?.SYSTEM, parts["SYSTEM"]);
+    pushAxisProperty(properties, "SCALE_TYP", loinc?.SCALE_TYP, parts["SCALE"]);
+    pushAxisProperty(properties, "METHOD_TYP", loinc?.METHOD_TYP, parts["METHOD"]);
+    pushAxisProperty(properties, "CLASS", loinc?.CLASS, parts["CLASS"]);
+    // Raw STATUS property (uppercase LOINC value, e.g. "ACTIVE") kept as-is -
+    // confirmed against a live tx.fhir.org $lookup that it stays alongside the
+    // derived one below, not replaced by it.
     string? status = loinc?.STATUS;
+    if status is string && status != "" {
+        properties.push({code: "STATUS", valueString: status});
+    }
+    // Also mapped to the shared "status" property code (lowercased value) so
+    // codesystemConceptsToParameters' existing inactive-derivation (status ==
+    // retired/deprecated) picks up deprecated LOINC codes the same way it
+    // already does for SNOMED. discouraged/trial are not inactive - those
+    // codes are still valid for use, just not preferred.
     if status is string && status != "" {
         properties.push({code: "status", valueCode: status.toLowerAscii()});
     }
@@ -177,7 +226,7 @@ isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConcept
     return properties;
 }
 
-isolated function createCodeSystemResource(LoincConcept[]? concepts, string? 'version) returns r4:CodeSystem|error {
+isolated function createCodeSystemResource(LoincConcept[]? concepts, map<map<LoincPartRef>> partIndex, string? 'version) returns r4:CodeSystem|error {
     r4:CodeSystem codeSystem = {
         resourceType: "CodeSystem",
         id: "loinc",
@@ -190,7 +239,7 @@ isolated function createCodeSystemResource(LoincConcept[]? concepts, string? 've
         hierarchyMeaning: r4:CODE_HIERARCHYMEANING_IS_A
     };
 
-    codeSystem.concept = LoincConceptToR4Concept(concepts);
+    codeSystem.concept = LoincConceptToR4Concept(concepts, partIndex);
 
     if ('version is string) {
         codeSystem.version = 'version;

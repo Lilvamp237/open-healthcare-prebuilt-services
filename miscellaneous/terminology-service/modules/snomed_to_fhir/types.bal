@@ -18,6 +18,12 @@ import ballerinax/health.fhir.r4;
 
 public const string SNOMED_SYSTEM_URL = "http://snomed.info/sct";
 public const string SNOMED_CODE_SYSTEM_ID = "snomed-ct";
+
+// International Edition core module. Used to build the module/version
+// canonical URI (SNOMED_SYSTEM_URL/SNOMED_CORE_MODULE_ID/version/YYYYMMDD)
+// that CodeSystem.version is set to - the standard SNOMED FHIR convention for
+// disambiguating which edition/version a code came from.
+public const string SNOMED_CORE_MODULE_ID = "900000000000207008";
 public const string SNOMED_CODE_SYSTEM_NAME = "SNOMEDCT";
 public const string SNOMED_CODE_SYSTEM_TITLE = "SNOMED Clinical Terms";
 public const string SNOMED_PUBLISHER = "SNOMED International";
@@ -44,6 +50,14 @@ public type SnomedConceptImport record {|
     string? caseSignificanceId;
 |};
 
+// A non-is-a RF2 relationship row (typeId != SNOMED_IS_A_TYPE_ID) - e.g. Finding
+// site, Associated morphology. Projected as a $lookup property keyed by typeId.
+public type SnomedAttributeRelationship record {|
+    string sourceId;
+    string typeId;
+    string destinationId;
+|};
+
 public type SnomedImportSummary record {|
     string codeSystemId;
     string system;
@@ -54,6 +68,7 @@ public type SnomedImportSummary record {|
     int textDefinitionsRead;
     int relationshipsRead;
     int closureRowsWritten;
+    int relationshipRowsWritten;
 |};
 
 // Carries the parsed + assembled inputs the DB layer needs
@@ -63,6 +78,9 @@ public type SnomedImportBundle record {|
     // Full multi-parent is-a adjacency: child SCTID -> [parent SCTID, ...],
     // from active is-a Relationship rows.
     map<string[]> isaParentsByChild;
+    // Active non-is-a Relationship rows (clinical attributes: Finding site,
+    // Associated morphology, etc).
+    SnomedAttributeRelationship[] attributeRelationships;
     int conceptsRead;
     int descriptionsRead;
     int textDefinitionsRead;

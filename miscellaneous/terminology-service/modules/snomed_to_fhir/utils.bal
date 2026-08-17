@@ -33,9 +33,13 @@ const string RF2_RELATIONSHIP_PREFIX = "sct2_Relationship_Snapshot_";
 public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
 // Builds a child -> parents map from the Relationship file, keeping only active
-// is-a rows. A concept can have several parents, so values are arrays.
-public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, int]|error {
+// is-a rows. A concept can have several parents, so values are arrays. Also
+// collects active non-is-a rows (clinical attributes) as a side channel in the
+// same pass, since the Relationship file can be large and re-reading it just
+// for attributes would double the I/O.
+public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, SnomedAttributeRelationship[], int]|error {
     map<string[]> parentsByChild = {};
+    SnomedAttributeRelationship[] attributeRelationships = [];
     int rowsRead = 0;
 
     stream<string, io:Error?> lineStream = check io:fileReadLinesAsStream(filePath);
@@ -46,11 +50,15 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
             string[] cols = regex:split(line, "\\t");
             if cols.length() >= RELATIONSHIP_COLUMN_COUNT {
                 rowsRead += 1;
-                if cols[2] == "1" && cols[7] == SNOMED_IS_A_TYPE_ID {
-                    string sourceId = cols[4];
-                    string[] parents = parentsByChild[sourceId] ?: [];
-                    parents.push(cols[5]);
-                    parentsByChild[sourceId] = parents;
+                if cols[2] == "1" {
+                    if cols[7] == SNOMED_IS_A_TYPE_ID {
+                        string sourceId = cols[4];
+                        string[] parents = parentsByChild[sourceId] ?: [];
+                        parents.push(cols[5]);
+                        parentsByChild[sourceId] = parents;
+                    } else {
+                        attributeRelationships.push({sourceId: cols[4], typeId: cols[7], destinationId: cols[5]});
+                    }
                 }
             }
         }
@@ -63,7 +71,7 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
     if closeResult is io:Error {
         return closeResult;
     }
-    return [parentsByChild, rowsRead];
+    return [parentsByChild, attributeRelationships, rowsRead];
 }
 
 // Returns every ancestor of a concept with its shortest distance. Walks the
@@ -322,7 +330,7 @@ public isolated function buildSnomedCodeSystemMetadata(string? version) returns 
         date: deriveSnomedDate(version)
     };
     if effectiveVersion != "" {
-        codeSystem.version = effectiveVersion;
+        codeSystem.version = SNOMED_SYSTEM_URL + "/" + SNOMED_CORE_MODULE_ID + "/version/" + effectiveVersion;
     }
     return codeSystem;
 }

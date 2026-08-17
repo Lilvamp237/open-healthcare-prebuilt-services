@@ -34,6 +34,12 @@ type ClosureRow record {|
     int depth;
 |};
 
+type RelationshipRow record {|
+    int sourceConceptId;
+    string typeId;
+    int destinationConceptId;
+|};
+
 // Parses an RF2 release directory and loads it into the database. Any earlier
 // load of the same url and version is replaced, and a partial load is rolled
 // back if the import fails partway.
@@ -85,7 +91,7 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     }
     int codeSystemId = codeSystemResult[0];
 
-    [int, int]|r4:FHIRError loadResult = loadConceptsAndClosure(bundle, codeSystemId);
+    [int, int, int]|r4:FHIRError loadResult = loadConceptsAndClosure(bundle, codeSystemId);
     if loadResult is r4:FHIRError {
         error? cleanup = deleteSnomedCodeSystemCascade(codeSystemId);
         if cleanup is error {
@@ -103,13 +109,14 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
         descriptionsRead: bundle.descriptionsRead,
         textDefinitionsRead: bundle.textDefinitionsRead,
         relationshipsRead: bundle.relationshipsRead,
-        closureRowsWritten: loadResult[1]
+        closureRowsWritten: loadResult[1],
+        relationshipRowsWritten: loadResult[2]
     };
 }
 
 // Inserts the concepts first to obtain their database ids, then uses those ids
 // to build the closure rows. Returns the counts of each.
-isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int]|r4:FHIRError {
+isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int, int]|r4:FHIRError {
     int imported = 0;
     map<int> dbIdByCode = {};
     store_h2:ConceptInsert[] batch = [];
@@ -158,7 +165,11 @@ isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int c
     // transitive ancestor that is also in the imported set.
     int closureRowsWritten = check writeClosure(bundle.isaParentsByChild, dbIdByCode, codeSystemId);
 
-    return [imported, closureRowsWritten];
+    // Non-is-a clinical attribute relationships (Finding site, Associated
+    // morphology, etc), for $lookup property projection.
+    int relationshipRowsWritten = check writeRelationships(bundle.attributeRelationships, dbIdByCode, codeSystemId);
+
+    return [imported, closureRowsWritten, relationshipRowsWritten];
 }
 
 // Removes any earlier load of the same url and version, so re-uploading a
@@ -194,15 +205,19 @@ isolated function replacePriorLoads(string url, string 'version) returns int|r4:
 }
 
 // Deletes a CodeSystem and everything under it, in dependency order: closure
-// rows, then any valueset_compose_include_concepts rows pointing at this
-// CodeSystem's concepts (write-only bookkeeping table - $expand/$validate-code/
-// etc. all resolve concepts via the stored ValueSet JSON, not this table, so
-// dropping these rows has no functional effect on existing ValueSets), then
-// concepts, then the CodeSystem itself.
+// rows, relationship rows, then any valueset_compose_include_concepts rows
+// pointing at this CodeSystem's concepts (write-only bookkeeping table -
+// $expand/$validate-code/etc. all resolve concepts via the stored ValueSet
+// JSON, not this table, so dropping these rows has no functional effect on
+// existing ValueSets), then concepts, then the CodeSystem itself.
 isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
     sql:ParameterizedQuery delClosure = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
     _ = check sClient->executeNativeSQL(delClosure);
+
+    sql:ParameterizedQuery delRelationships = sql:queryConcat(
+            `DELETE FROM `, escapeToQuery("concept_relationships"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+    _ = check sClient->executeNativeSQL(delRelationships);
 
     sql:ParameterizedQuery delComposeIncludeConcepts = sql:queryConcat(
             `DELETE FROM `, escapeToQuery("valueset_compose_include_concepts"),
@@ -285,6 +300,72 @@ isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns
     if result is persist:Error {
         return r4:createFHIRError(
                 "Error while inserting SNOMED closure batch: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+    return rows.length();
+}
+
+// Writes one row per active non-is-a Relationship (clinical attributes like
+// Finding site, Associated morphology). Rows whose source or destination isn't
+// in the imported concept set (e.g. destination outside a partial import) are
+// skipped, same as writeClosure skips ancestors outside the imported set.
+isolated function writeRelationships(snomed:SnomedAttributeRelationship[] attributeRelationships, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
+    int written = 0;
+    RelationshipRow[] batch = [];
+
+    foreach snomed:SnomedAttributeRelationship rel in attributeRelationships {
+        int? sourceDbId = dbIdByCode[rel.sourceId];
+        int? destinationDbId = dbIdByCode[rel.destinationId];
+        if sourceDbId is int && destinationDbId is int {
+            batch.push({sourceConceptId: sourceDbId, typeId: rel.typeId, destinationConceptId: destinationDbId});
+        }
+
+        if batch.length() >= SNOMED_INSERT_BATCH_SIZE {
+            int|r4:FHIRError flushed = flushRelationshipBatch(batch, codeSystemId);
+            if flushed is r4:FHIRError {
+                return flushed;
+            }
+            written += flushed;
+            batch = [];
+        }
+    }
+
+    if batch.length() > 0 {
+        int|r4:FHIRError flushed = flushRelationshipBatch(batch, codeSystemId);
+        if flushed is r4:FHIRError {
+            return flushed;
+        }
+        written += flushed;
+    }
+
+    return written;
+}
+
+isolated function flushRelationshipBatch(RelationshipRow[] rows, int codeSystemId) returns int|r4:FHIRError {
+    if rows.length() == 0 {
+        return 0;
+    }
+
+    string head = string `INSERT INTO ${escape("concept_relationships")} (${escape("sourceConceptId")}, ${escape("typeId")}, ${escape("destinationConceptId")}, ${escape("codeSystemId")}) VALUES `;
+
+    sql:ParameterizedQuery[] fragments = [stringToParameterizedQuery(head)];
+    boolean first = true;
+    foreach RelationshipRow row in rows {
+        if !first {
+            fragments.push(`, `);
+        }
+        fragments.push(`(${row.sourceConceptId}, ${row.typeId}, ${row.destinationConceptId}, ${codeSystemId})`);
+        first = false;
+    }
+
+    sql:ParameterizedQuery query = sql:queryConcat(...fragments);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while inserting SNOMED relationship batch: " + result.message(),
                 r4:ERROR,
                 r4:INVALID_REQUIRED,
                 cause = result,

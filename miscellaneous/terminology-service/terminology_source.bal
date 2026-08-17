@@ -1213,6 +1213,72 @@ isolated function getConceptFlags(r4:uri system, r4:code code, string? version =
     return [isAbstract, isInactive];
 }
 
+type ConceptRelationshipQueryRow record {|
+    int relationshipId;
+    int sourceConceptId;
+    string typeId;
+    int destinationConceptId;
+    int codeSystemId;
+|};
+
+// Fetch a concept's active non-is-a relationships (clinical attributes: Finding
+// site, Associated morphology, etc, from concept_relationships) and resolve the
+// type and destination codes' display text where available. A relationship
+// whose destination concept can't be found is skipped - typeCode/valueCode
+// (SCTIDs) are always meaningful on their own, but a property entry with
+// neither a display for its code nor for its value isn't useful to emit.
+isolated function getConceptAttributeRelationships(r4:uri system, r4:code code, string? version = ())
+        returns ConceptAttributeRelationship[] {
+    store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
+    if storeCs is error {
+        return [];
+    }
+    int csId = storeCs.codeSystemId;
+
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(csId, code);
+    if storeConcept is r4:FHIRError {
+        return [];
+    }
+
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("concept_relationships"),
+            ` WHERE `, escapeToQuery("sourceConceptId"), ` = ${storeConcept.conceptId}`,
+            ` AND `, escapeToQuery("codeSystemId"), ` = ${csId}`);
+    stream<ConceptRelationshipQueryRow, persist:Error?> relStream = sClient->queryNativeSQL(query);
+    ConceptRelationshipQueryRow[]|error rows = from ConceptRelationshipQueryRow r in relStream
+        select r;
+    if rows is error {
+        return [];
+    }
+
+    ConceptAttributeRelationship[] resolved = [];
+    foreach ConceptRelationshipQueryRow row in rows {
+        string? typeDisplay = ();
+        store_h2:Concept|r4:FHIRError typeConcept = getStoreConceptByCode(csId, row.typeId);
+        if typeConcept is store_h2:Concept {
+            r4:CodeSystemConcept|error decoded = byteToConcept(typeConcept.concept);
+            if decoded is r4:CodeSystemConcept {
+                typeDisplay = decoded.display;
+            }
+        }
+
+        sql:ParameterizedQuery destQuery = sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("conceptId"), ` = ${row.destinationConceptId}`);
+        store_h2:Concept|r4:FHIRError destConcept = getStoreConcept(destQuery);
+        if destConcept is store_h2:Concept {
+            string? valueDisplay = ();
+            r4:CodeSystemConcept|error decoded = byteToConcept(destConcept.concept);
+            if decoded is r4:CodeSystemConcept {
+                valueDisplay = decoded.display;
+            }
+            resolved.push({typeCode: row.typeId, typeDisplay: typeDisplay, valueCode: destConcept.code, valueDisplay: valueDisplay});
+        }
+    }
+
+    return resolved;
+}
+
 isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store_h2:Concept|r4:FHIRError {
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(sqlQuery);
     store_h2:Concept[]|error dbConcepts = streamToStoreConcept(conceptStream);

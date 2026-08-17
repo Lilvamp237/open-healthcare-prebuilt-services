@@ -173,6 +173,13 @@ isolated function codeSystemConceptPropertyToParameter(r4:CodeSystemConceptPrope
         }
     }
 
+    if property.code == "CLASSTYPE" && property.valueString is string {
+        string? classTypeDesc = loincClassTypeDisplay(<string>property.valueString);
+        if classTypeDesc is string {
+            part.push({name: "description", valueString: classTypeDesc});
+        }
+    }
+
     if part.length() > 0 {
         param.part = part;
     }
@@ -189,6 +196,17 @@ isolated function snomedModuleDisplay(string moduleId) returns string? {
         "900000000000012004": "SNOMED CT model component module"
     };
     return moduleDisplays[moduleId];
+}
+
+// LOINC's CLASSTYPE is a small fixed enum (LOINC Users' Guide Section 2.11).
+isolated function loincClassTypeDisplay(string classType) returns string? {
+    map<string> classTypeDisplays = {
+        "1": "Laboratory class",
+        "2": "Clinical class",
+        "3": "Claims attachments",
+        "4": "Surveys"
+    };
+    return classTypeDisplays[classType];
 }
 
 isolated function extractZipFile(string dirPath) returns error? {

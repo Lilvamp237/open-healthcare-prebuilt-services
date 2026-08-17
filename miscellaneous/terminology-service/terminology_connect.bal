@@ -421,14 +421,16 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
 
     r4:CodeSystemConcept? parentConcept = ();
     r4:CodeSystemConcept[] childConcepts = [];
+    ConceptAttributeRelationship[] attributeRelationships = [];
     if cs is r4:CodeSystem && cs.url is r4:uri {
         [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
                 getConceptHierarchy(<r4:uri>cs.url, <r4:code>codeValue, 'version);
         parentConcept = hierarchy[0];
         childConcepts = hierarchy[1];
+        attributeRelationships = getConceptAttributeRelationships(<r4:uri>cs.url, <r4:code>codeValue, 'version);
     }
 
-    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts);
+    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts, attributeRelationships);
 }
 
 public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
@@ -499,14 +501,16 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
 
     r4:CodeSystemConcept? parentConcept = ();
     r4:CodeSystemConcept[] childConcepts = [];
+    ConceptAttributeRelationship[] attributeRelationships = [];
     if system is r4:uri && effectiveCode is r4:code {
         [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
                 getConceptHierarchy(system, effectiveCode, 'version);
         parentConcept = hierarchy[0];
         childConcepts = hierarchy[1];
+        attributeRelationships = getConceptAttributeRelationships(system, effectiveCode, 'version);
     }
 
-    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts);
+    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts, attributeRelationships);
 }
 
 public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
@@ -576,14 +580,16 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
 
         r4:CodeSystemConcept? parentConcept = ();
         r4:CodeSystemConcept[] childConcepts = [];
+        ConceptAttributeRelationship[] attributeRelationships = [];
         if effectiveSystem is r4:uri && effectiveCode is r4:code {
             [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
                     getConceptHierarchy(effectiveSystem, effectiveCode, 'version);
             parentConcept = hierarchy[0];
             childConcepts = hierarchy[1];
+            attributeRelationships = getConceptAttributeRelationships(effectiveSystem, effectiveCode, 'version);
         }
 
-        return codesystemConceptsToParameters(result, parentConcept = parentConcept, childConcepts = childConcepts);
+        return codesystemConceptsToParameters(result, parentConcept = parentConcept, childConcepts = childConcepts, attributeRelationships = attributeRelationships);
     }
     return r4:createFHIRError(
             "Invalid request payload",

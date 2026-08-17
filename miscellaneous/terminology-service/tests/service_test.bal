@@ -28,11 +28,13 @@ http:Client vsClient = check new ("http://localhost:9089/fhir/r4/ValueSet");
 @test:BeforeSuite
 isolated function beforeSuite() returns error? {
     check store_h2:setupTestDB();
+    check store_h2:setupNativeSqlTestTables();
     check addExampleDataToTestDB();
 }
 
 @test:AfterSuite
 function afterSuite() returns error? {
+    check store_h2:cleanupNativeSqlTestTables();
     check store_h2:cleanupTestDB();
 }
 

@@ -13,6 +13,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+import ballerina/file;
 import ballerina/io;
 import ballerinax/health.fhir.r4;
 
@@ -23,14 +24,34 @@ isolated function readLoincCsv(string path) returns LoincConcept[]|error {
 }
 
 // Function to export the combined CodeSystem resource to a JSON file
-isolated function exportCodeSystem(LoincConcept[] concepts, string? 'version, string jsonFilePath) returns error? {
+isolated function exportCodeSystem(LoincConcept[] concepts, map<map<LoincPartRef>> partIndex, string? 'version, string jsonFilePath) returns error? {
     r4:CodeSystem codeSystem;
-    codeSystem = check createCodeSystemResource(concepts, 'version);
+    codeSystem = check createCodeSystemResource(concepts, partIndex, 'version);
 
     check io:fileWriteString(jsonFilePath, codeSystem.toJson().toJsonString());
 }
 
 public isolated function convert(string filePath, string? version) returns error? {
-    LoincConcept[] loincData = check readLoincCsv(filePath + LOINC_CSV_FILE_PATH);
-    check exportCodeSystem(loincData, version, filePath + FHIR_LOINC_FILE_NAME);
+    // LoincTable/ and AccessoryFiles/PartFile/ may be at the zip root, or wrapped
+    // in the release folder LOINC ships them in (e.g. "Loinc_2.82/") - search for
+    // them by name rather than assuming a fixed path.
+    string? loincTableDir = check findDirNamed(filePath, "LoincTable");
+    if loincTableDir is () {
+        return error(string `LoincTable directory not found under ${filePath}`);
+    }
+    LoincConcept[] loincData = check readLoincCsv(loincTableDir + "/Loinc.csv");
+
+    // The Part File is a separate LOINC download. Optional: properties fall back
+    // to their raw CSV text when it isn't present.
+    map<map<LoincPartRef>> partIndex = {};
+    string? partFileDir = check findDirNamed(filePath, "PartFile");
+    if partFileDir is string {
+        string primaryPartLinkPath = partFileDir + "/LoincPartLink_Primary.csv";
+        boolean primaryExists = check file:test(primaryPartLinkPath, file:EXISTS);
+        if primaryExists {
+            partIndex = check buildLoincPartIndex(primaryPartLinkPath, partFileDir + "/LoincPartLink_Supplementary.csv");
+        }
+    }
+
+    check exportCodeSystem(loincData, partIndex, version, filePath + FHIR_LOINC_FILE_NAME);
 }

@@ -60,7 +60,7 @@ public function testBuildSnomedCodeSystemMetadataHasFragmentContentAndNoConcepts
 
     test:assertEquals(cs.id, SNOMED_CODE_SYSTEM_ID);
     test:assertEquals(cs.url, SNOMED_SYSTEM_URL);
-    test:assertEquals(cs.version, "20260401");
+    test:assertEquals(cs.version, "http://snomed.info/sct/900000000000207008/version/20260401");
     test:assertEquals(cs.date, "2026-04-01");
     test:assertEquals(cs.content, r4:CODE_CONTENT_FRAGMENT);
     test:assertEquals(cs.caseSensitive, true);
@@ -134,18 +134,25 @@ public function testStreamConceptImportsJoinsDescriptions() returns error? {
 }
 public function testStreamSnomedIsaAdjacency() returns error? {
     // Fixture has 3 rows: one active is-a, one inactive is-a, one active
-    // non-is-a. Only the first should survive.
-    [map<string[]>, int] result = check streamSnomedIsaAdjacency(
+    // non-is-a. Only the active is-a row should reach the adjacency map; the
+    // active non-is-a row should reach attributeRelationships instead.
+    [map<string[]>, SnomedAttributeRelationship[], int] result = check streamSnomedIsaAdjacency(
             "modules/snomed_to_fhir/tests/resources/sct2_Relationship_Snapshot_INT_20260401.txt"
     );
     map<string[]> adjacency = result[0];
-    int rowsRead = result[1];
+    SnomedAttributeRelationship[] attributeRelationships = result[1];
+    int rowsRead = result[2];
 
     test:assertEquals(rowsRead, 3);
     test:assertEquals(adjacency.length(), 1);
     string[]? parents = adjacency["123456"];
     test:assertTrue(parents is string[]);
     test:assertEquals(<string[]>parents, ["138875005"]);
+
+    test:assertEquals(attributeRelationships.length(), 1);
+    test:assertEquals(attributeRelationships[0].sourceId, "123456");
+    test:assertEquals(attributeRelationships[0].typeId, "363698007");
+    test:assertEquals(attributeRelationships[0].destinationId, "442083009");
 }
 
 @test:Config {
@@ -208,6 +215,6 @@ public function testBuildSnomedImportEndToEnd() returns error? {
     test:assertEquals(bundle.concepts[0].code, "123456");
     test:assertEquals(bundle.isaParentsByChild.length(), 1);
     test:assertEquals(bundle.isaParentsByChild["123456"], ["138875005"]);
-    test:assertEquals(bundle.codeSystemMetadata.version, "20260401");
+    test:assertEquals(bundle.codeSystemMetadata.version, "http://snomed.info/sct/900000000000207008/version/20260401");
     test:assertEquals(bundle.codeSystemMetadata.content, r4:CODE_CONTENT_FRAGMENT);
 }

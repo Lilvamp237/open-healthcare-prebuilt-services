@@ -3,6 +3,10 @@
 -- This file is an auto-generated file by Ballerina persistence layer for model.
 -- Please verify the generated scripts and execute them against the target DB server.
 
+DROP TABLE IF EXISTS "closure_table_pairs";
+DROP TABLE IF EXISTS "closure_table_concepts";
+DROP TABLE IF EXISTS "conceptmaps";
+DROP TABLE IF EXISTS "closure_tables";
 DROP TABLE IF EXISTS "concept_relationships";
 DROP TABLE IF EXISTS "concept_closure";
 DROP TABLE IF EXISTS "valueset_compose_include_value_sets";
@@ -102,6 +106,49 @@ CREATE TABLE "concept_relationships" (
 	PRIMARY KEY("relationshipId")
 );
 
+-- $closure operation state: a client-named closure table (ConceptMap/$closure),
+-- the concepts added to it, and the subsumption pairs already reported for it
+-- (stamped with the response version they were reported in, so a client can
+-- resync via the version input parameter instead of just "since last call").
+CREATE TABLE "closure_tables" (
+	"closureTableId" SERIAL,
+	"name" VARCHAR(191) NOT NULL,
+	"currentVersion" INT NOT NULL DEFAULT 0,
+	PRIMARY KEY("closureTableId")
+);
+
+CREATE TABLE "closure_table_concepts" (
+	"closureTableConceptId" SERIAL,
+	"closureTableId" INT NOT NULL,
+	"conceptId" INT NOT NULL,
+	PRIMARY KEY("closureTableConceptId")
+);
+
+CREATE TABLE "closure_table_pairs" (
+	"closureTablePairId" SERIAL,
+	"closureTableId" INT NOT NULL,
+	"ancestorConceptId" INT NOT NULL,
+	"descendantConceptId" INT NOT NULL,
+	"reportedAtVersion" INT NOT NULL,
+	PRIMARY KEY("closureTablePairId")
+);
+
+-- ConceptMap resources, backing $translate. See modules/store_h2/script.sql for
+-- the full rationale on why this is native SQL, not the persist client.
+CREATE TABLE "conceptmaps" (
+	"conceptMapId" SERIAL,
+	"id" VARCHAR(191) NOT NULL,
+	"url" VARCHAR(191),
+	"version" VARCHAR(191),
+	"name" VARCHAR(191),
+	"title" VARCHAR(191),
+	"status" VARCHAR(191) NOT NULL,
+	"sourceUri" VARCHAR(191),
+	"targetUri" VARCHAR(191),
+	"conceptMap" BYTEA NOT NULL,
+	PRIMARY KEY("conceptMapId")
+);
+
 -- CodeSystem/$lookup, CodeSystem/$subsumes, CodeSystem read-by-id, CodeSystem search
 CREATE INDEX "idx_codesystems_id" ON "codesystems"("id");
 CREATE INDEX "idx_codesystems_url" ON "codesystems"("url");
@@ -139,3 +186,15 @@ CREATE INDEX "idx_closure_descendant" ON "concept_closure"("codeSystemId", "desc
 CREATE INDEX "idx_closure_pair" ON "concept_closure"("ancestorConceptId", "descendantConceptId");
 
 CREATE INDEX "idx_relationships_source" ON "concept_relationships"("codeSystemId", "sourceConceptId");
+
+CREATE UNIQUE INDEX "idx_closure_tables_name" ON "closure_tables"("name");
+CREATE UNIQUE INDEX "idx_closure_table_concepts_unique" ON "closure_table_concepts"("closureTableId", "conceptId");
+CREATE UNIQUE INDEX "idx_closure_table_pairs_unique" ON "closure_table_pairs"("closureTableId", "ancestorConceptId", "descendantConceptId");
+CREATE INDEX "idx_closure_table_pairs_version" ON "closure_table_pairs"("closureTableId", "reportedAtVersion");
+
+CREATE INDEX "idx_conceptmaps_id" ON "conceptmaps"("id");
+CREATE INDEX "idx_conceptmaps_url" ON "conceptmaps"("url");
+CREATE INDEX "idx_conceptmaps_url_version" ON "conceptmaps"("url", "version");
+CREATE INDEX "idx_conceptmaps_source" ON "conceptmaps"("sourceUri");
+CREATE INDEX "idx_conceptmaps_source_target" ON "conceptmaps"("sourceUri", "targetUri");
+

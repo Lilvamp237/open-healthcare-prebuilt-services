@@ -22,6 +22,10 @@
 // connection option.
 public isolated function setupNativeSqlTestTables() returns error? {
     H2Client testClient = check new ("jdbc:h2:./tests/test", "sa", "");
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "conceptmaps"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_table_pairs"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_table_concepts"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_tables"`);
     _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "concept_relationships"`);
     _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "concept_closure"`);
     _ = check testClient->executeNativeSQL(`
@@ -42,12 +46,54 @@ CREATE TABLE "concept_relationships" (
 	"codeSystemId" INT NOT NULL,
 	PRIMARY KEY("relationshipId")
 );`);
+    _ = check testClient->executeNativeSQL(`
+CREATE TABLE "closure_tables" (
+	"closureTableId" SERIAL,
+	"name" VARCHAR(191) NOT NULL,
+	"currentVersion" INT NOT NULL DEFAULT 0,
+	PRIMARY KEY("closureTableId")
+);`);
+    _ = check testClient->executeNativeSQL(`
+CREATE TABLE "closure_table_concepts" (
+	"closureTableConceptId" SERIAL,
+	"closureTableId" INT NOT NULL,
+	"conceptId" INT NOT NULL,
+	PRIMARY KEY("closureTableConceptId")
+);`);
+    _ = check testClient->executeNativeSQL(`
+CREATE TABLE "closure_table_pairs" (
+	"closureTablePairId" SERIAL,
+	"closureTableId" INT NOT NULL,
+	"ancestorConceptId" INT NOT NULL,
+	"descendantConceptId" INT NOT NULL,
+	"reportedAtVersion" INT NOT NULL,
+	PRIMARY KEY("closureTablePairId")
+);`);
+    _ = check testClient->executeNativeSQL(`
+CREATE TABLE "conceptmaps" (
+	"conceptMapId" SERIAL,
+	"id" VARCHAR(191) NOT NULL,
+	"url" VARCHAR(191),
+	"version" VARCHAR(191),
+	"name" VARCHAR(191),
+	"title" VARCHAR(191),
+	"status" VARCHAR(191) NOT NULL,
+	"sourceUri" VARCHAR(191),
+	"targetUri" VARCHAR(191),
+	"conceptMap" BLOB NOT NULL,
+	PRIMARY KEY("conceptMapId")
+);`);
     check testClient.close();
 }
 
 public isolated function cleanupNativeSqlTestTables() returns error? {
     H2Client testClient = check new ("jdbc:h2:./tests/test", "sa", "");
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "conceptmaps"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_table_pairs"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_table_concepts"`);
+    _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "closure_tables"`);
     _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "concept_relationships"`);
     _ = check testClient->executeNativeSQL(`DROP TABLE IF EXISTS "concept_closure"`);
     check testClient.close();
 }
+

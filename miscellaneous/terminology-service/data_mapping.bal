@@ -349,6 +349,23 @@ isolated function byteToValueSet(byte[] byteArray) returns r4:ValueSet|error {
     return parsedValueSet;
 }
 
+isolated function conceptMapToByte(r4:ConceptMap conceptMap) returns byte[]|r4:FHIRError {
+    return conceptMap.toJsonString().toBytes();
+}
+
+isolated function byteToConceptMap(byte[] byteArray) returns r4:ConceptMap|error {
+    string conceptMapJsonString = check 'string:fromBytes(byteArray);
+    // Unlike CodeSystem/ValueSet, ConceptMap isn't a profile the Terminology IG
+    // registers, so parser:parse resolves it against the default (international401)
+    // IG and returns an international401:ConceptMap - a different nominal type
+    // from r4:ConceptMap despite being structurally identical on the wire. Retype
+    // via JSON instead of ensureType() to sidestep the nominal mismatch.
+    anydata parsed = check parser:parse(conceptMapJsonString);
+    r4:ConceptMap parsedConceptMap = check parsed.toJson().cloneWithType(r4:ConceptMap);
+
+    return parsedConceptMap;
+}
+
 isolated function streamToStoreCodeSystem(stream<store_h2:CodeSystem, persist:Error?> codeSystemStream) returns store_h2:CodeSystem[]|error {
     store_h2:CodeSystem[] dbCodeSystems = check from store_h2:CodeSystem codeSystem in codeSystemStream
         select codeSystem;
@@ -610,3 +627,4 @@ isolated function codeSystemDetailsIntoBundle(TerminologyConcept[] codeSystemDet
         entry: entries
     };
 }
+

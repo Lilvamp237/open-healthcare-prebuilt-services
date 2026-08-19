@@ -59,3 +59,4 @@ public isolated function buildSnomedImport(string dirPath, string? version) retu
         relationshipsRead: adjacencyResult[2]
     };
 }
+

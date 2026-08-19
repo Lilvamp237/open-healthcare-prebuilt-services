@@ -86,3 +86,4 @@ public type SnomedImportBundle record {|
     int textDefinitionsRead;
     int relationshipsRead;
 |};
+

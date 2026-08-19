@@ -224,3 +224,4 @@ public function testHierarchyEmittedAsParentAndChildProperties() {
     test:assertEquals(parentValues, ["code2"]);
     test:assertEquals(childValues, ["code2aI", "code2aII"]);
 }
+

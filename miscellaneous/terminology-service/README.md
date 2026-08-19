@@ -6,6 +6,8 @@ This project implements a FHIR R4 Terminology Service in Ballerina, providing RE
 
 - **ValueSet Operations**: Expand, validate, search, create, and retrieve ValueSets.
 - **CodeSystem Operations**: Lookup, subsume, search, create, and retrieve CodeSystems.
+- **ConceptMap Operations**: Translate, search, create, and retrieve ConceptMaps.
+- **Closure Table**: Maintain a client-named, incrementally-growing subsumption table via `$closure`.
 - **Batch Validation**: Validate multiple ValueSets in a single request.
 - **Upload**: Upload terminology resources in bulk.
 - **Find Code**: Search for codes across CodeSystems and ValueSets.
@@ -19,11 +21,12 @@ The service exposes the following main endpoints under `/fhir/r4`:
 
 - `GET /ValueSet/$expand` — Expand a ValueSet.
 - `POST /ValueSet/$expand` — Expand a ValueSet with a POST body.
-  - `ValueSet.compose.include.filter` supports `is-a` / `descendent-of`, `=`, and `regex`.
+  - `ValueSet.compose.include.filter` supports `is-a` / `descendent-of`, `=`, and `regex`. Multiple filters on the same `include` are combined with AND (each narrows the same member set further), while multiple `include` entries are combined with OR.
   - `activeOnly=true` drops inactive concepts from the expansion and recomputes `expansion.total`.
 
 - `GET /ValueSet/$validate-code` — Validate a code against a ValueSet.
 - `POST /ValueSet/$validate-code` — Validate a code with a POST body.
+  - Accepts either a `url` referencing an already-persisted ValueSet, or an inline `valueSet` resource in the request body — including one that was never separately uploaded.
 - `GET /ValueSet/{id}/$expand` — Expand a ValueSet by ID.
 - `GET /ValueSet/{id}/$validate-code` — Validate a code by ValueSet ID.
 - `GET /ValueSet/{id}` — Retrieve a ValueSet by ID.
@@ -43,11 +46,20 @@ The service exposes the following main endpoints under `/fhir/r4`:
 - `GET /CodeSystem` — Search CodeSystems.
 - `POST /CodeSystem` — Create a new CodeSystem.
 
+### ConceptMap
+
+- `GET /ConceptMap/$translate` — Translate a code from a source ValueSet to a target ValueSet.
+- `POST /ConceptMap/$translate` — Translate with a POST body.
+- `GET /ConceptMap/{id}` — Retrieve a ConceptMap by ID.
+- `GET /ConceptMap` — Search ConceptMaps.
+- `POST /ConceptMap` — Create a new ConceptMap.
+
 ### Other Operations
 
 - `POST /` — Batch validate ValueSets.
 - `POST /$upload` — Upload terminology resources.
 - `POST /$upload` — Upload terminology resources as a zip. See [Uploading Terminology Content](#uploading-terminology-content).
+- `POST /$closure` — [ConceptMap/$closure](https://hl7.org/fhir/R4/conceptmap-operation-closure.html): maintain a client-named, incrementally-growing subsumption closure table. Each call adds the given `concept`s to the named table (`name` parameter) and returns only the subsumption pairs not yet reported for that name. Pass a previously-returned `version` to resync everything reported since that version.
 - `GET /$find-code` — Find codes.
 - `POST /$find-code` — Find codes with a POST body.
 - `GET /metadata` — Get the FHIR CapabilityStatement.
@@ -148,3 +160,4 @@ port = 5432
 ## License
 
 This project is licensed under the Apache License 2.0.
+

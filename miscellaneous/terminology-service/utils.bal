@@ -294,3 +294,4 @@ public isolated function getSearchParametersFromFHIRContext(r4:FHIRContext fhirC
     }
     return searchParameters;
 }
+

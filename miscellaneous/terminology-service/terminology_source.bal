@@ -23,8 +23,10 @@ import ballerina/log;
 import ballerina/persist;
 import ballerina/regex;
 import ballerina/sql;
+import ballerina/uuid;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
+import ballerinax/persist.sql as psql;
 
 // import ballerina/io;
 
@@ -439,34 +441,39 @@ public isolated class TerminologySource {
                 foreach r4:ValueSetComposeInclude inc in composeRules.include {
                     r4:ValueSetComposeIncludeFilter[]? incFilters = inc.filter;
                     r4:uri? incSystem = inc.system;
-                    if incFilters is r4:ValueSetComposeIncludeFilter[] && incSystem is r4:uri {
+                    if incFilters is r4:ValueSetComposeIncludeFilter[] && incFilters.length() > 0 && incSystem is r4:uri {
                         store_h2:CodeSystem|error filterCs = getStoreCodeSystemByURL(incSystem, inc.'version);
                         if filterCs is store_h2:CodeSystem {
+                            // Per the FHIR compose.include model, multiple filters on the
+                            // same include are ANDed together (each narrows the same
+                            // member set further) - unlike multiple includes, which are
+                            // unioned. Intersect each filter's matches by code instead of
+                            // pushing every filter's matches independently. A no-op when
+                            // there's only one filter.
+                            r4:ValueSetExpansionContains[]? intersected = ();
                             foreach r4:ValueSetComposeIncludeFilter f in incFilters {
+                                r4:ValueSetExpansionContains[] members = [];
                                 match f.op {
                                     "is-a" | "descendent-of" if f.property == "concept" => {
-                                        r4:ValueSetExpansionContains[] members = hasClosureRows(filterCs.codeSystemId)
+                                        members = hasClosureRows(filterCs.codeSystemId)
                                             ? closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter)
                                             : parentWalkDescendants(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
-                                        foreach r4:ValueSetExpansionContains m in members {
-                                            allConcepts.push(m);
-                                        }
                                     }
                                     "=" => {
-                                        r4:ValueSetExpansionContains[] members = filterConceptsByProperty(
+                                        members = filterConceptsByProperty(
                                                 filterCs.codeSystemId, f.property, f.value, filter, stringEquals);
-                                        foreach r4:ValueSetExpansionContains m in members {
-                                            allConcepts.push(m);
-                                        }
                                     }
                                     "regex" => {
-                                        r4:ValueSetExpansionContains[] members = filterConceptsByProperty(
+                                        members = filterConceptsByProperty(
                                                 filterCs.codeSystemId, f.property, f.value, filter, regexMatches);
-                                        foreach r4:ValueSetExpansionContains m in members {
-                                            allConcepts.push(m);
-                                        }
                                     }
                                 }
+                                intersected = intersected is r4:ValueSetExpansionContains[]
+                                    ? intersectByCode(intersected, members)
+                                    : members;
+                            }
+                            foreach r4:ValueSetExpansionContains m in (intersected ?: []) {
+                                allConcepts.push(m);
                             }
                         }
                     }
@@ -515,7 +522,11 @@ public isolated class TerminologySource {
         boolean aSubsumesB = closureContainsPair(conceptA.conceptId, conceptB.conceptId, codeSystem.codeSystemId)
             || isInParentChain(conceptA.conceptId, conceptB);
         if aSubsumesB {
-            return {'parameter: [{name: terminology:OUTCOME, valueCode: terminology:SUBSUMED}]};
+            // terminology:SUBSUMED is a library constant, but its value ("subsumed")
+            // is wrong per https://hl7.org/fhir/R4/valueset-concept-subsumption-outcome.html -
+            // the correct code for "codeA subsumes codeB" is "subsumes". Using the
+            // literal here instead of the mis-valued library constant.
+            return {'parameter: [{name: terminology:OUTCOME, valueCode: "subsumes"}]};
         }
 
         boolean bSubsumesA = closureContainsPair(conceptB.conceptId, conceptA.conceptId, codeSystem.codeSystemId)
@@ -565,28 +576,23 @@ public isolated class TerminologySource {
     }
 
     public isolated function addConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError? {
-        return;
+        return storeConceptMap(conceptMap);
     }
 
     public isolated function findConceptMaps(r4:uri sourceValueSetUri, r4:uri? targetValueSetUri) returns r4:ConceptMap[]|r4:FHIRError {
-        return [];
+        return findStoredConceptMaps(sourceValueSetUri, targetValueSetUri);
     }
 
     public isolated function getConceptMap(r4:uri conceptMapUrl, string? version) returns r4:ConceptMap|r4:FHIRError {
-        return r4:createFHIRError(
-                "ConceptMap operation not yet implemented",
-                r4:ERROR,
-                r4:PROCESSING_NOT_FOUND,
-                cause = error("ConceptMap retrieval not supported"),
-                httpStatusCode = http:STATUS_NOT_IMPLEMENTED);
+        return getStoredConceptMapByUrl(conceptMapUrl, version);
     }
 
     public isolated function isConceptMapExist(r4:uri system, string version) returns boolean {
-        return false;
+        return storedConceptMapExists(system, version);
     }
 
     public isolated function searchConceptMap(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:ConceptMap[]|r4:FHIRError {
-        return [];
+        return searchStoredConceptMaps(params, offset, count);
     }
 }
 
@@ -643,6 +649,291 @@ isolated function closureMembers(int codeSystemId, string anchorCode, boolean in
     }
 
     return members;
+}
+
+// ---------------------------------------------------------------------------
+// ConceptMap/$closure operation storage (https://hl7.org/fhir/R4/conceptmap-operation-closure.html).
+// Maintains a client-named, incrementally-growing subsumption closure table:
+// each call adds concepts to a named table and returns only the subsumption
+// pairs not yet reported for that name. Handler: closurePost in
+// terminology_connect.bal.
+// ---------------------------------------------------------------------------
+
+type ClosureTableRow record {|
+    int closureTableId;
+    string name;
+    int currentVersion;
+|};
+
+type ClosureTablePairRow record {|
+    int closureTablePairId;
+    int closureTableId;
+    int ancestorConceptId;
+    int descendantConceptId;
+    int reportedAtVersion;
+|};
+
+// A concept the client tried to add that couldn't be resolved to a stored
+// concept (unknown system, or code not found under that system).
+type UnmatchedClosureConcept record {|
+    string? system;
+    string code;
+|};
+
+isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r4:FHIRError {
+    sql:ParameterizedQuery selectQuery = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("closure_tables"),
+            ` WHERE `, escapeToQuery("name"), ` = ${name}`);
+    stream<ClosureTableRow, persist:Error?> existingStream = sClient->queryNativeSQL(selectQuery);
+    ClosureTableRow[]|error existing = from ClosureTableRow row in existingStream
+        select row;
+    if existing is ClosureTableRow[] && existing.length() > 0 {
+        return existing[0];
+    }
+
+    sql:ParameterizedQuery insertQuery = sql:queryConcat(
+            `INSERT INTO `, escapeToQuery("closure_tables"),
+            ` (`, escapeToQuery("name"), `, `, escapeToQuery("currentVersion"), `) VALUES (${name}, 0)`);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(insertQuery);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while creating closure table: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+    int? generatedId = <int?>result.lastInsertId;
+    int closureTableId = generatedId ?: 0;
+    return {closureTableId, name, currentVersion: 0};
+}
+
+isolated function getKnownConceptIds(int closureTableId) returns int[] {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT `, escapeToQuery("conceptId"), ` FROM `, escapeToQuery("closure_table_concepts"),
+            ` WHERE `, escapeToQuery("closureTableId"), ` = ${closureTableId}`);
+    stream<record {|int conceptId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {|int conceptId;|}[]|error rows = from record {|int conceptId;|} r in resultStream
+        select r;
+    if rows is error {
+        return [];
+    }
+    return rows.map(r => r.conceptId);
+}
+
+isolated function addClosureTableConcept(int closureTableId, int conceptId) returns r4:FHIRError? {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `INSERT INTO `, escapeToQuery("closure_table_concepts"),
+            ` (`, escapeToQuery("closureTableId"), `, `, escapeToQuery("conceptId"), `) VALUES (${closureTableId}, ${conceptId})`);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while recording closure table concept: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+}
+
+isolated function getAncestorConceptIds(int conceptId, int codeSystemId) returns int[] {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT `, escapeToQuery("ancestorConceptId"), ` FROM `, escapeToQuery("concept_closure"),
+            ` WHERE `, escapeToQuery("descendantConceptId"), ` = ${conceptId}`,
+            ` AND `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
+            ` AND `, escapeToQuery("depth"), ` >= 1`);
+    stream<record {|int ancestorConceptId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {|int ancestorConceptId;|}[]|error rows = from record {|int ancestorConceptId;|} r in resultStream
+        select r;
+    if rows is error {
+        return [];
+    }
+    return rows.map(r => r.ancestorConceptId);
+}
+
+// Restricts descendant lookup to a specific candidate set (the concepts
+// already known to this closure table), rather than returning every
+// descendant - $closure only needs to report pairs involving concepts the
+// client has actually added.
+isolated function getDescendantConceptIdsAmong(int conceptId, int codeSystemId, int[] candidateIds) returns int[] {
+    if candidateIds.length() == 0 {
+        return [];
+    }
+    sql:ParameterizedQuery[] idFragments = [];
+    boolean first = true;
+    foreach int id in candidateIds {
+        if !first {
+            idFragments.push(`, `);
+        }
+        idFragments.push(`${id}`);
+        first = false;
+    }
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT `, escapeToQuery("descendantConceptId"), ` FROM `, escapeToQuery("concept_closure"),
+            ` WHERE `, escapeToQuery("ancestorConceptId"), ` = ${conceptId}`,
+            ` AND `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
+            ` AND `, escapeToQuery("depth"), ` >= 1`,
+            ` AND `, escapeToQuery("descendantConceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+    stream<record {|int descendantConceptId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {|int descendantConceptId;|}[]|error rows = from record {|int descendantConceptId;|} r in resultStream
+        select r;
+    if rows is error {
+        return [];
+    }
+    return rows.map(r => r.descendantConceptId);
+}
+
+isolated function isPairReported(int closureTableId, int ancestorId, int descendantId) returns boolean {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT 1 FROM `, escapeToQuery("closure_table_pairs"),
+            ` WHERE `, escapeToQuery("closureTableId"), ` = ${closureTableId}`,
+            ` AND `, escapeToQuery("ancestorConceptId"), ` = ${ancestorId}`,
+            ` AND `, escapeToQuery("descendantConceptId"), ` = ${descendantId} LIMIT 1`);
+    stream<record {}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {}[]|error rows = from record {} r in resultStream
+        select r;
+    return rows is error ? false : rows.length() > 0;
+}
+
+isolated function recordClosurePair(int closureTableId, int ancestorId, int descendantId, int version) returns r4:FHIRError? {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `INSERT INTO `, escapeToQuery("closure_table_pairs"),
+            ` (`, escapeToQuery("closureTableId"), `, `, escapeToQuery("ancestorConceptId"), `, `,
+            escapeToQuery("descendantConceptId"), `, `, escapeToQuery("reportedAtVersion"), `)`,
+            ` VALUES (${closureTableId}, ${ancestorId}, ${descendantId}, ${version})`);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while recording closure table pair: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+}
+
+// Pairs reported after `sinceVersion` support a resync: a client that missed
+// some responses can catch up by version number. `excludeVersion` is the
+// version this same call just produced (already returned separately via the
+// caller's own newly-discovered pairs), so it's skipped here to avoid
+// duplicating it in the resync set.
+isolated function getPairsSinceVersion(int closureTableId, int sinceVersion, int excludeVersion) returns ClosureTablePairRow[] {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("closure_table_pairs"),
+            ` WHERE `, escapeToQuery("closureTableId"), ` = ${closureTableId}`,
+            ` AND `, escapeToQuery("reportedAtVersion"), ` > ${sinceVersion}`,
+            ` AND `, escapeToQuery("reportedAtVersion"), ` != ${excludeVersion}`);
+    stream<ClosureTablePairRow, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    ClosureTablePairRow[]|error rows = from ClosureTablePairRow r in resultStream
+        select r;
+    if rows is error {
+        return [];
+    }
+    return rows;
+}
+
+isolated function bumpClosureTableVersion(int closureTableId, int newVersion) returns r4:FHIRError? {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `UPDATE `, escapeToQuery("closure_tables"), ` SET `, escapeToQuery("currentVersion"), ` = ${newVersion}`,
+            ` WHERE `, escapeToQuery("closureTableId"), ` = ${closureTableId}`);
+    psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
+    if result is persist:Error {
+        return r4:createFHIRError(
+                "Error while updating closure table version: " + result.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = result,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+}
+
+// Resolves a stored conceptId back to its code, display, and CodeSystem url -
+// needed to build the response, since closure_table_pairs only stores internal
+// conceptIds.
+isolated function getConceptRefById(int conceptId) returns [string, string?, string]|error {
+    sql:ParameterizedQuery conceptQuery = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("conceptId"), ` = ${conceptId}`);
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConcept(conceptQuery);
+    if storeConcept is r4:FHIRError {
+        return error(storeConcept.message());
+    }
+
+    sql:ParameterizedQuery csQuery = sql:queryConcat(
+            `SELECT `, escapeToQuery("url"), ` FROM `, escapeToQuery("codesystems"),
+            ` WHERE `, escapeToQuery("codeSystemId"), ` = ${storeConcept.codesystemCodeSystemId}`);
+    stream<record {|string url;|}, persist:Error?> csStream = sClient->queryNativeSQL(csQuery);
+    record {|string url;|}[]|error csRows = from record {|string url;|} r in csStream
+        select r;
+    string systemUrl = (csRows is record {|string url;|}[] && csRows.length() > 0) ? csRows[0].url : "";
+
+    return [storeConcept.code, storeConcept.display, systemUrl];
+}
+
+// Turns the newly-discovered (and any resynced) subsumption pairs into a
+// ConceptMap: one group per (descendant-system, ancestor-system) pair, with
+// each element mapping a descendant code to its ancestor via a "subsumes"
+// equivalence. Unmatched input concepts get their own element with an
+// "unmatched" target, per the $closure spec.
+isolated function buildClosureConceptMap(string name, int 'version, ClosureTablePairRow[] pairs, UnmatchedClosureConcept[] unmatched)
+        returns r4:ConceptMap|r4:FHIRError {
+    // Group pairs by (sourceSystem, targetSystem) - always the same system for
+    // a within-CodeSystem is-a closure, but kept general in case cross-system
+    // relationships are ever added to concept_closure.
+    map<r4:ConceptMapGroupElement[]> elementsBySystemPair = {};
+
+    foreach ClosureTablePairRow pair in pairs {
+        [string, string?, string]|error descendantRef = getConceptRefById(pair.descendantConceptId);
+        [string, string?, string]|error ancestorRef = getConceptRefById(pair.ancestorConceptId);
+        if descendantRef is error || ancestorRef is error {
+            continue;
+        }
+        [string, string?, string] [descCode, descDisplay, descSystem] = descendantRef;
+        [string, string?, string] [ancCode, ancDisplay, ancSystem] = ancestorRef;
+
+        string groupKey = descSystem + "|" + ancSystem;
+        r4:ConceptMapGroupElement[] groupElements = elementsBySystemPair[groupKey] ?: [];
+        groupElements.push({
+            code: descCode,
+            display: descDisplay,
+            target: [
+                {code: ancCode, display: ancDisplay, equivalence: "subsumes"}
+            ]
+        });
+        elementsBySystemPair[groupKey] = groupElements;
+    }
+
+    foreach UnmatchedClosureConcept u in unmatched {
+        string groupKey = (u.system ?: "") + "|" + (u.system ?: "");
+        r4:ConceptMapGroupElement[] groupElements = elementsBySystemPair[groupKey] ?: [];
+        groupElements.push({
+            code: u.code,
+            target: [
+                {equivalence: "unmatched"}
+            ]
+        });
+        elementsBySystemPair[groupKey] = groupElements;
+    }
+
+    r4:ConceptMapGroup[] groups = [];
+    foreach [string, r4:ConceptMapGroupElement[]] [groupKey, elements] in elementsBySystemPair.entries() {
+        string[] parts = re `\|`.split(groupKey);
+        groups.push({
+            'source: parts.length() > 0 ? parts[0] : (),
+            target: parts.length() > 1 ? parts[1] : (),
+            element: elements
+        });
+    }
+
+    r4:ConceptMap conceptMap = {
+        resourceType: "ConceptMap",
+        id: uuid:createType4AsString(),
+        status: "active",
+        'version: 'version.toString()
+    };
+    if groups.length() > 0 {
+        conceptMap.group = groups;
+    }
+    return conceptMap;
 }
 
 // True if this CodeSystem's hierarchy is stored in the closure table (SNOMED)
@@ -714,6 +1005,24 @@ isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boo
     }
 
     return members;
+}
+
+// Keeps entries of `a` whose code also appears in `b` - used to AND together
+// multiple filters on the same compose.include.
+isolated function intersectByCode(r4:ValueSetExpansionContains[] a, r4:ValueSetExpansionContains[] b) returns r4:ValueSetExpansionContains[] {
+    map<boolean> codesInB = {};
+    foreach var entry in b {
+        if entry.code is string {
+            codesInB[<string>entry.code] = true;
+        }
+    }
+    r4:ValueSetExpansionContains[] result = [];
+    foreach var entry in a {
+        if entry.code is string && codesInB.hasKey(<string>entry.code) {
+            result.push(entry);
+        }
+    }
+    return result;
 }
 
 // Exact string match, used as the comparator for the `=` filter operator.
@@ -1522,3 +1831,4 @@ isolated function saveNestedValueSetsInValueSetComposeInclude(r4:canonical[] val
         _ = check sClient->/valuesetcomposeincludevaluesets.post([dbValueSetInsert]);
     }
 }
+

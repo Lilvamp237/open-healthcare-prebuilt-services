@@ -15,6 +15,7 @@
 // under the License.
 
 import terminology_service.loinc_to_fhir as loinc;
+import terminology_service.store_h2;
 
 import ballerina/http;
 import ballerina/log;
@@ -56,6 +57,30 @@ public isolated function readValueSetByUrl(string url) returns r4:ValueSet|r4:FH
     string? value_set_url_version = split.length() > 1 ? split[1] : ();
 
     return terminology:readValueSetByUrl(url = value_set_url, version = value_set_url_version, terminology = terminology_source);
+}
+
+public isolated function readConceptMapByUrl(string url) returns r4:ConceptMap|r4:FHIRError {
+    string[] split = regex:split(url, string `\|`);
+    string concept_map_url = split[0];
+    string? concept_map_url_version = split.length() > 1 ? split[1] : ();
+
+    return terminology:readConceptMap(conceptMapUrl = concept_map_url, version = concept_map_url_version, terminology = terminology_source);
+}
+
+// The terminology library only exposes ConceptMap lookup by canonical url
+// (readConceptMap) - there's no by-id counterpart like readCodeSystemById /
+// readValueSetById. Resolved directly against storage instead.
+public isolated function readConceptMapById(string id) returns r4:ConceptMap|r4:FHIRError {
+    r4:ConceptMap[] results = check searchStoredConceptMaps({"_id": [createRequestSearchParameter("_id", id)]}, (), ());
+    if results.length() == 0 {
+        return r4:createFHIRError(
+                "ConceptMap not found: " + id,
+                r4:ERROR,
+                r4:PROCESSING_NOT_FOUND,
+                cause = error("No ConceptMap found for id " + id),
+                httpStatusCode = http:STATUS_NOT_FOUND);
+    }
+    return results[0];
 }
 
 public isolated function searchValueSet(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
@@ -101,6 +126,32 @@ public isolated function searchCodeSystem(r4:FHIRContext ctx) returns r4:Bundle|
     r4:CodeSystem[] codeSystems = check terminology:searchCodeSystems(clonedParams, terminology = terminology_source);
 
     r4:BundleEntry[] entries = codeSystems.'map(c => <r4:BundleEntry>{'resource: c.toJson(), search: {mode: r4:MATCH}});
+
+    return {
+        'type: r4:BUNDLE_TYPE_SEARCHSET,
+        meta: {
+            lastUpdated: time:utcToString(time:utcNow())
+        },
+        total: entries.length(),
+        entry: entries
+    };
+}
+
+public isolated function searchConceptMap(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
+    map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
+    map<r4:RequestSearchParameter[]>|error clonedParams = params.cloneWithType();
+
+    if clonedParams is error {
+        return r4:createFHIRError(
+                "Invalid search parameters",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    r4:ConceptMap[] conceptMaps = check terminology:searchConceptMaps(clonedParams, terminology = terminology_source);
+
+    r4:BundleEntry[] entries = conceptMaps.'map(c => <r4:BundleEntry>{'resource: c.toJson(), search: {mode: r4:MATCH}});
 
     return {
         'type: r4:BUNDLE_TYPE_SEARCHSET,
@@ -513,6 +564,49 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
     return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts, attributeRelationships);
 }
 
+// terminology:valueSetLookUp discards the ValueSet resource it's given beyond
+// vs.url/vs.version - it re-resolves that url from storage rather than
+// evaluating the compose actually supplied. An inline "valueSet" param sent in
+// a $validate-code request is (by definition) usually not separately
+// persisted, so that resolution fails even though the compose is already in
+// hand. terminology:valueSetExpansion, unlike valueSetLookUp, does evaluate an
+// inline resource's compose directly (that's how $expand already handles inline
+// ValueSets correctly) - reuse it here and check membership in the result.
+isolated function lookupInInlineValueSet(r4:Coding|r4:CodeableConcept codeValue, r4:ValueSet valueSet) returns r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError {
+    r4:ValueSet expanded = check terminology:valueSetExpansion({}, vs = valueSet, terminology = terminology_source);
+    r4:ValueSetExpansionContains[] contains = expanded.expansion?.contains ?: [];
+
+    r4:Coding[] codingsToCheck = [];
+    if codeValue is r4:Coding {
+        codingsToCheck = [codeValue];
+    } else if codeValue is r4:CodeableConcept {
+        codingsToCheck = codeValue.coding ?: [];
+    }
+    r4:CodeSystemConcept[] matches = [];
+    foreach r4:Coding c in codingsToCheck {
+        foreach r4:ValueSetExpansionContains entry in contains {
+            // expansion.contains entries only carry `system` when the include spans
+            // multiple code systems (see postProcessExpansion, which back-fills it
+            // for the single-system case after this call returns) - so only gate on
+            // system when both sides actually have one to compare.
+            if entry.code == c.code && (entry.system is () || c.system is () || entry.system == c.system) {
+                matches.push({code: <r4:code>entry.code, display: entry.display});
+                break;
+            }
+        }
+    }
+
+    if matches.length() == 0 {
+        return r4:createFHIRError(
+                "Concept not found in the provided ValueSet",
+                r4:ERROR,
+                r4:PROCESSING_NOT_FOUND,
+                cause = error("No matching concept found in the inline ValueSet"),
+                httpStatusCode = http:STATUS_NOT_FOUND);
+    }
+    return matches.length() == 1 ? matches[0] : matches;
+}
+
 public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     r4:Coding?|r4:CodeableConcept? codingValue = ();
     r4:ValueSet? valueSet = ();
@@ -552,6 +646,18 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
                 }
             }
         }
+
+        // terminology:valueSetLookUp unconditionally casts vs.url to r4:uri with
+        // no null check - but ValueSet.url is optional per spec, and that's often
+        // exactly why a caller passes an inline valueSet (an ad-hoc ValueSet with
+        // no stable canonical url). Without this, an inline ValueSet with no url
+        // panics with a raw TypeCastError instead of a handled FHIRError.
+        r4:ValueSet? inlineValueSet = valueSet;
+        if inlineValueSet is r4:ValueSet && inlineValueSet.url is () {
+            r4:ValueSet mutableValueSet = inlineValueSet.clone();
+            mutableValueSet.url = "urn:uuid:" + uuid:createType1AsString();
+            valueSet = mutableValueSet;
+        }
     } else {
         return r4:createFHIRError(
                 "Invalid request payload",
@@ -566,14 +672,35 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
         codingValue = <r4:Coding>{system: system, code: code};
     }
 
+    // terminology:valueSetLookUp only ever reads vs.url/vs.version off the ValueSet
+    // we pass it, then re-resolves that url from storage - it never evaluates the
+    // compose we actually send. That's fine for a ValueSet resolved by url below
+    // (it's already persisted under that exact url), but an inline "valueSet"
+    // param is - by definition - usually not persisted, so that resolution would
+    // always fail. Remember which case we're in before the url-resolution branch
+    // below can overwrite valueSet.
+    boolean isInlineValueSet = valueSet is r4:ValueSet;
+
     // If no inline ValueSet was supplied but url was, resolve it from storage.
     if valueSet is () && valueSetUrl is r4:uri {
         valueSet = check readValueSetByUrl(valueSetUrl);
     }
 
     if valueSet is r4:ValueSet && (codingValue is r4:Coding || codingValue is r4:CodeableConcept) {
-        r4:CodeSystemConcept[]|r4:CodeSystemConcept result =
-                check terminology:valueSetLookUp(codingValue, vs = valueSet, terminology = terminology_source);
+        // Try the library's own lookup first - when the inline ValueSet's url
+        // happens to match something already persisted, this returns the full,
+        // richly-populated concept (definition, properties, designations) that
+        // our own storage-backed lookup produces. Only fall back to evaluating
+        // the inline compose ourselves when that fails AND this was an inline
+        // ValueSet - i.e. exactly the case the library can't resolve by url.
+        r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError primary =
+                terminology:valueSetLookUp(codingValue, vs = valueSet, terminology = terminology_source);
+        r4:CodeSystemConcept[]|r4:CodeSystemConcept result;
+        if primary is r4:FHIRError && isInlineValueSet {
+            result = check lookupInInlineValueSet(codingValue, valueSet);
+        } else {
+            result = check primary;
+        }
 
         r4:uri? effectiveSystem = codingValue is r4:Coding ? codingValue.system : system;
         r4:code? effectiveCode = codingValue is r4:Coding ? codingValue.code : code;
@@ -601,6 +728,12 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
 
 public isolated function valueSetLookUpGet(r4:FHIRContext ctx, string? id = (), string? reqSystem = (), string? reqCodeValue = ()) returns r4:Parameters|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParams = ctx.getRequestSearchParameters();
+    // "url" is the spec-correct parameter for which ValueSet to validate against
+    // (https://hl7.org/fhir/R4/valueset-operation-validate-code.html). "system"
+    // is meant only for the code's own origin system, but earlier callers of
+    // this GET path used "system" as a stand-in for the ValueSet url - kept as a
+    // fallback so those callers don't break, with "url" taking precedence.
+    string? url = searchParams["url"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["url"])[0].value : ();
     string? system = searchParams["system"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["system"])[0].value : reqSystem;
     r4:code? codeValue = searchParams["code"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["code"])[0].value : reqCodeValue;
 
@@ -615,6 +748,8 @@ public isolated function valueSetLookUpGet(r4:FHIRContext ctx, string? id = (), 
     r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError result;
     if id is string {
         result = terminology:valueSetLookUp(<r4:code>codeValue, vs = check readValueSetById(id), terminology = terminology_source);
+    } else if url is string {
+        result = terminology:valueSetLookUp(<r4:code>codeValue, vs = check readValueSetByUrl(url), terminology = terminology_source);
     } else if system is string {
         result = terminology:valueSetLookUp(<r4:code>codeValue, vs = check readValueSetByUrl(system), terminology = terminology_source);
     } else {
@@ -698,6 +833,140 @@ public isolated function subsumesPost(r4:FHIRContext ctx, r4:Parameters paramete
                 r4:INVALID_REQUIRED,
                 httpStatusCode = http:STATUS_BAD_REQUEST);
     }
+}
+
+// terminology:translate() returns r4:OperationOutcome (not r4:FHIRError) on
+// failure, unlike the rest of this codebase's terminology:* calls. Bridges it
+// into an r4:FHIRError so the $translate handlers can use the same
+// check/error-propagation convention as every other operation here.
+isolated function operationOutcomeToFHIRError(r4:OperationOutcome outcome) returns r4:FHIRError {
+    string message = "Translation failed";
+    r4:OperationOutcomeIssue[] issues = outcome.issue;
+    if issues.length() > 0 {
+        r4:CodeableConcept? details = issues[0].details;
+        string? diagnostics = issues[0].diagnostics;
+        if details is r4:CodeableConcept && details.text is string {
+            message = <string>details.text;
+        } else if diagnostics is string {
+            message = diagnostics;
+        }
+    }
+    return r4:createFHIRError(message, r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+}
+
+// Shared by translateGet/translatePost once source/target/codesToTranslate have
+// been extracted from the request. source is required because the underlying
+// library function (terminology:translate) takes it as a non-nilable r4:uri -
+// though the FHIR spec marks it merely "recommended," this server requires it.
+isolated function performTranslate(r4:uri? sourceValueSetUri, r4:uri? targetValueSetUri, r4:CodeableConcept? codesToTranslate) returns r4:Parameters|r4:FHIRError {
+    if sourceValueSetUri is () {
+        return r4:createFHIRError(
+                "Missing required input parameter: source",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                diagnostic = "The 'source' parameter (source ValueSet canonical URL) is required",
+                httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+    if codesToTranslate is () {
+        return r4:createFHIRError(
+                "Missing required input parameter",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                diagnostic = "Provide one of: 'coding', 'codeableConcept', or 'code' + 'system'",
+                httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    r4:Parameters|r4:OperationOutcome result = terminology:translate(sourceValueSetUri, targetValueSetUri, codesToTranslate, terminology = terminology_source);
+    if result is r4:Parameters {
+        return result;
+    }
+    return operationOutcomeToFHIRError(<r4:OperationOutcome>result);
+}
+
+public isolated function translateGet(r4:FHIRContext ctx) returns r4:Parameters|r4:FHIRError {
+    map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
+
+    r4:uri? sourceValueSetUri = params["source"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["source"])[0].value : ();
+    r4:uri? targetValueSetUri = params["target"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["target"])[0].value
+        : (params["targetsystem"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["targetsystem"])[0].value : ());
+    r4:uri? system = params["system"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["system"])[0].value : ();
+    r4:code? code = params["code"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["code"])[0].value : ();
+    string? 'version = params["version"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["version"])[0].value : ();
+
+    r4:CodeableConcept? codesToTranslate = ();
+    if code is r4:code && system is r4:uri {
+        codesToTranslate = {coding: [{system: system, code: code, 'version: 'version}]};
+    }
+
+    return performTranslate(sourceValueSetUri, targetValueSetUri, codesToTranslate);
+}
+
+public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
+    r4:uri? sourceValueSetUri = ();
+    r4:uri? targetValueSetUri = ();
+    r4:uri? system = ();
+    r4:code? code = ();
+    string? 'version = ();
+    r4:Coding? codingValue = ();
+    r4:CodeableConcept? codeableConceptValue = ();
+
+    r4:Parameters|error typedParams = parameters.toJson().cloneWithType(r4:Parameters);
+    if typedParams is error {
+        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    if typedParams.'parameter is r4:ParametersParameter[] {
+        // $translate accepts EITHER a "coding" or "codeableConcept" parameter, OR
+        // separate "system"/"code"(+"version") parameters, to identify the code(s)
+        // being translated. "target" and "targetsystem" are aliases of each other
+        // (a target ValueSet vs a target CodeSystem) - this server treats them the
+        // same way, since findConceptMaps only matches on a single target scope.
+        foreach var item in <r4:ParametersParameter[]>typedParams.'parameter {
+            match item.name {
+                "source" => {
+                    sourceValueSetUri = item.valueUri ?: item.valueString;
+                }
+                "target" => {
+                    targetValueSetUri = item.valueUri ?: item.valueString;
+                }
+                "targetsystem" => {
+                    targetValueSetUri = targetValueSetUri ?: (item.valueUri ?: item.valueString);
+                }
+                "system" => {
+                    system = item.valueUri ?: item.valueString;
+                }
+                "code" => {
+                    code = item.valueCode ?: item.valueString;
+                }
+                "version" => {
+                    'version = item.valueString;
+                }
+                "coding" => {
+                    codingValue = item.valueCoding;
+                }
+                "codeableConcept" => {
+                    codeableConceptValue = item.valueCodeableConcept;
+                }
+            }
+        }
+    } else {
+        return r4:createFHIRError(
+                "Invalid request payload",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    r4:CodeableConcept? codesToTranslate = ();
+    if codeableConceptValue is r4:CodeableConcept {
+        codesToTranslate = codeableConceptValue;
+    } else if codingValue is r4:Coding {
+        codesToTranslate = {coding: [codingValue]};
+    } else if code is r4:code && system is r4:uri {
+        codesToTranslate = {coding: [{system: system, code: code, 'version: 'version}]};
+    }
+
+    return performTranslate(sourceValueSetUri, targetValueSetUri, codesToTranslate);
 }
 
 public isolated function batchValidateValueSets(r4:Bundle bundle) returns r4:Bundle|r4:FHIRError {
@@ -832,6 +1101,27 @@ public isolated function addValueSet(r4:FHIRContext ctx, r4:ValueSet valueSet) r
     }
 }
 
+public isolated function addConceptMap(r4:FHIRContext ctx, r4:ConceptMap conceptMap) returns r4:FHIRError? {
+    do {
+        // Like byteToConceptMap in data_mapping.bal: ConceptMap isn't a resource
+        // type the Terminology IG registers, so the fhirr4:Listener's own request
+        // binding resolves it against the default (international401) IG. The
+        // bound value is structurally identical to r4:ConceptMap but nominally a
+        // different type, which trips up terminology:addConceptMap's internal
+        // validator:validate(..., r4:ConceptMap) call. Re-derive a clean
+        // r4:ConceptMap via JSON to sidestep the nominal mismatch.
+        r4:ConceptMap normalized = check conceptMap.toJson().cloneWithType(r4:ConceptMap);
+        return terminology:addConceptMap(normalized, terminology = terminology_source);
+    } on fail var e {
+        return r4:createFHIRError(
+                "Invalid request payload, " + e.message(),
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                cause = e,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+    }
+}
+
 public isolated function upload(http:Request payload) returns r4:FHIRError? {
     if payload.getContentType() != ZIP {
         return r4:createFHIRError(
@@ -947,6 +1237,141 @@ public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:
     return codeSystemDetailsIntoBundle(result);
 }
 
+// Implements ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html):
+// maintains a client-named, incrementally-growing subsumption closure table.
+// Each call adds the given concepts to the named table and returns only the
+// subsumption pairs not yet reported for that name - both a new concept's own
+// ancestors (via concept_closure, the same table $subsumes/$lookup already
+// use), and any case where the new concept turns out to be an ancestor of a
+// concept added in an earlier call.
+public isolated function closurePost(http:Request request) returns r4:ConceptMap|r4:FHIRError {
+    json|http:ClientError jsonPayload = request.getJsonPayload();
+    if jsonPayload is http:ClientError {
+        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+    r4:Parameters|error typedParams = jsonPayload.cloneWithType(r4:Parameters);
+    if typedParams is error {
+        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    string? name = ();
+    r4:Coding[] concepts = [];
+    string? resyncVersion = ();
+
+    if typedParams.'parameter is r4:ParametersParameter[] {
+        foreach var item in <r4:ParametersParameter[]>typedParams.'parameter {
+            match item.name {
+                "name" => {
+                    name = item.valueString;
+                }
+                "concept" => {
+                    if item.valueCoding is r4:Coding {
+                        concepts.push(<r4:Coding>item.valueCoding);
+                    }
+                }
+                "version" => {
+                    resyncVersion = item.valueString;
+                }
+            }
+        }
+    }
+
+    if name is () {
+        return r4:createFHIRError(
+                "Missing required 'name' parameter",
+                r4:ERROR,
+                r4:INVALID_REQUIRED,
+                diagnostic = "$closure requires a 'name' parameter identifying the closure table",
+                httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+    string closureName = name;
+
+    ClosureTableRow tableRow = check getOrCreateClosureTable(closureName);
+    int[] knownConceptIds = getKnownConceptIds(tableRow.closureTableId);
+
+    // (ancestor, descendant) pairs newly discovered this call, plus any concepts
+    // that couldn't be resolved.
+    [int, int][] newPairs = [];
+    UnmatchedClosureConcept[] unmatched = [];
+
+    foreach r4:Coding coding in concepts {
+        string? system = coding.system;
+        r4:code? code = coding.code;
+        if system is () || code is () {
+            unmatched.push({system: system, code: code ?: ""});
+            continue;
+        }
+
+        store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, coding.version);
+        if storeCs is error {
+            unmatched.push({system: system, code: code});
+            continue;
+        }
+        store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(storeCs.codeSystemId, code);
+        if storeConcept is r4:FHIRError {
+            unmatched.push({system: system, code: code});
+            continue;
+        }
+
+        int conceptId = storeConcept.conceptId;
+        if knownConceptIds.indexOf(conceptId) is int {
+            // Already added in an earlier call - nothing new to compute for it.
+            continue;
+        }
+
+        // This concept's own ancestors (is-a chain), whether or not those
+        // ancestors were ever explicitly added by the client.
+        int[] ancestorIds = getAncestorConceptIds(conceptId, storeCs.codeSystemId);
+        foreach int ancestorId in ancestorIds {
+            newPairs.push([ancestorId, conceptId]);
+        }
+
+        // The reverse direction: this newly-added concept might itself be an
+        // ancestor of a concept added in an earlier call, discovered only now.
+        if knownConceptIds.length() > 0 {
+            int[] descendantIds = getDescendantConceptIdsAmong(conceptId, storeCs.codeSystemId, knownConceptIds);
+            foreach int descendantId in descendantIds {
+                newPairs.push([conceptId, descendantId]);
+            }
+        }
+
+        check addClosureTableConcept(tableRow.closureTableId, conceptId);
+        knownConceptIds.push(conceptId);
+    }
+
+    int newVersion = tableRow.currentVersion + 1;
+    check bumpClosureTableVersion(tableRow.closureTableId, newVersion);
+
+    ClosureTablePairRow[] pairsToReturn = [];
+    foreach [int, int] [ancestorId, descendantId] in newPairs {
+        boolean alreadyReported = isPairReported(tableRow.closureTableId, ancestorId, descendantId);
+        if !alreadyReported {
+            check recordClosurePair(tableRow.closureTableId, ancestorId, descendantId, newVersion);
+            pairsToReturn.push({
+                closureTablePairId: 0,
+                closureTableId: tableRow.closureTableId,
+                ancestorConceptId: ancestorId,
+                descendantConceptId: descendantId,
+                reportedAtVersion: newVersion
+            });
+        }
+    }
+
+    // Resync: also include everything reported after the version the client
+    // last synced to, in addition to whatever this call just discovered.
+    if resyncVersion is string {
+        int|error requestedVersion = int:fromString(resyncVersion);
+        if requestedVersion is int {
+            ClosureTablePairRow[] historicalPairs = getPairsSinceVersion(tableRow.closureTableId, requestedVersion, newVersion);
+            foreach var p in historicalPairs {
+                pairsToReturn.push(p);
+            }
+        }
+    }
+
+    return check buildClosureConceptMap(closureName, newVersion, pairsToReturn, unmatched);
+}
+
 public isolated function findCodePost(http:Request request) returns r4:Bundle|r4:FHIRError {
     string property = DISPLAY;
     string? system = ();
@@ -1017,3 +1442,4 @@ public isolated function findCodePost(http:Request request) returns r4:Bundle|r4
 
     return codeSystemDetailsIntoBundle(result);
 }
+

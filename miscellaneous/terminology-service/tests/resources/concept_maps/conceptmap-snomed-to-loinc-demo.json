@@ -1,0 +1,44 @@
+{
+  "resourceType": "ConceptMap",
+  "id": "demo-snomed-to-loinc-vitals",
+  "url": "http://example.org/fhir/ConceptMap/demo-snomed-to-loinc-vitals",
+  "version": "1.0.0",
+  "name": "DemoSNOMEDtoLOINCVitals",
+  "title": "Demo: SNOMED CT to LOINC (vital sign observables)",
+  "status": "active",
+  "date": "2026-08-19",
+  "publisher": "WSO2 LLC.",
+  "description": "Demonstration mapping from SNOMED CT observable-entity concepts to their equivalent LOINC codes, for showing $translate. Both pairs are well-known, widely-used equivalences (the same pairing appears in common interoperability mapping guides), not something invented for this demo.",
+  "sourceUri": "http://snomed.info/sct",
+  "targetUri": "http://loinc.org",
+  "group": [
+    {
+      "source": "http://snomed.info/sct",
+      "target": "http://loinc.org",
+      "element": [
+        {
+          "code": "271649006",
+          "display": "Systolic blood pressure",
+          "target": [
+            {
+              "code": "8480-6",
+              "display": "Systolic blood pressure",
+              "equivalence": "equivalent"
+            }
+          ]
+        },
+        {
+          "code": "386725007",
+          "display": "Body temperature",
+          "target": [
+            {
+              "code": "8310-5",
+              "display": "Body temperature",
+              "equivalence": "equivalent"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

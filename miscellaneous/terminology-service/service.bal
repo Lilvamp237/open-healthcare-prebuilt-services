@@ -197,6 +197,63 @@ service /fhir/r4/CodeSystem on new fhirr4:Listener(config = codeSystemApiConfig)
     }
 }
 
+service /fhir/r4/ConceptMap on new fhirr4:Listener(config = conceptMapApiConfig) {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function get \$translate(r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Translate");
+
+        r4:Parameters result = check translateGet(ctx);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post \$translate(r4:FHIRContext ctx, r4:Parameters parameters) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Translate");
+
+        r4:Parameters result = check translatePost(ctx, parameters);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function get [string id](r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug(string `FHIR Terminology request is received. Interaction: ConceptMap Get with Id: ${id}`);
+
+        r4:ConceptMap conceptMap = check readConceptMapById(id);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(conceptMap, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function get .(r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Search");
+
+        r4:Bundle conceptMap = check searchConceptMap(ctx);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(conceptMap, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post .(r4:FHIRContext ctx, r4:ConceptMap conceptMap) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: Add new ConceptMap");
+
+        _ = check addConceptMap(ctx, conceptMap);
+
+        http:Response successResponse = new;
+        successResponse.statusCode = http:STATUS_CREATED;
+        return successResponse;
+    }
+}
+
 service /fhir/r4 on new fhirr4:Listener(config = apiConfig) {
 
     public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
@@ -295,6 +352,29 @@ service http:InterceptableService /fhir/r4/\$versions on baseListener {
     }
 }
 
+// ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html)
+// is a base-level operation ([base]/$closure, not resource-scoped), same as
+// $upload/$find-code/$versions above - so it lives on baseListener rather than
+// the fhirr4:Listener-based CodeSystem/ValueSet services, and its handler
+// parses the request body itself instead of getting r4:Parameters for free.
+service http:InterceptableService /fhir/r4/\$closure on baseListener {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: $closure");
+
+        r4:ConceptMap result = check closurePost(request);
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+}
+
 service http:InterceptableService /fhir/r4/metadata on baseListener {
 
     public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
@@ -331,7 +411,7 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                         ]
                     }
                 ],
-                "description": "TerminologyCapabilities for the WSO2 Ballerina FHIR R4 Terminology Service (wso2/terminology_service v0.1.1), powered by the ballerinax/health.fhir.r4.terminology v7.0.1 library. The service persists CodeSystem and ValueSet resources in a relational database (PostgreSQL or H2). CodeSystem concepts are extracted into a separate table at ingest with a parentConceptId hierarchy, enabling efficient $lookup and DB-native $subsumes traversal. ConceptMap and $translate are defined in the library but are not implemented in this service tier — all ConceptMap interface methods are stubs.",
+                "description": "TerminologyCapabilities for the WSO2 Ballerina FHIR R4 Terminology Service (wso2/terminology_service v0.1.1), powered by the ballerinax/health.fhir.r4.terminology v7.0.1 library. The service persists CodeSystem, ValueSet, and ConceptMap resources in a relational database (PostgreSQL or H2). CodeSystem concepts are extracted into a separate table at ingest with a parentConceptId hierarchy, enabling efficient $lookup and DB-native $subsumes traversal. $closure is implemented, backed by the same closure table $subsumes uses, with its own client-named-table state tracked separately from the ConceptMap resource CRUD. $translate is implemented via the library's matching logic, backed by ConceptMap resource CRUD (create/read/search) against the same database.",
                 "kind": "instance",
                 "software": {
                     "name": "ballerinax/health.fhir.r4.terminology",
@@ -462,3 +542,4 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
     }
 
 }
+

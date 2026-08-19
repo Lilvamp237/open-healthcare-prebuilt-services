@@ -96,3 +96,4 @@ isolated function addPartRef(map<map<LoincPartRef>> index, string[] cols) {
     forTerm[partType] = {partNumber: cols[PART_LINK_COL_PART_NUMBER], partName: cols[PART_LINK_COL_PART_NAME]};
     index[loincNumber] = forTerm;
 }
+

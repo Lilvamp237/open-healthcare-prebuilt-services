@@ -131,6 +131,36 @@ function assertParametersEqual(r4:Parameters expected, r4:Parameters actual) ret
     return true;
 }
 
+// json-typed convenience wrapper around assertParametersEqual (which is
+// already order-independent on the top-level `.parameter` array) for call
+// sites that fetch a raw json response instead of a typed r4:Parameters.
+function assertParametersJsonEqual(json actual, json expected) returns error? {
+    r4:Parameters actualParams = check actual.cloneWithType(r4:Parameters);
+    r4:Parameters expectedParams = check expected.cloneWithType(r4:Parameters);
+    _ = assertParametersEqual(expectedParams, actualParams);
+}
+
+// Same idea as assertParametersJsonEqual, but for a batch-response Bundle:
+// entries stay positional (they correspond 1:1 to the request bundle's own
+// order), while each entry's own Parameters resource is compared with
+// order-insensitive parameter matching.
+function assertBatchResponseJsonEqual(json actual, json expected) returns error? {
+    r4:Bundle actualBundle = check actual.cloneWithType(r4:Bundle);
+    r4:Bundle expectedBundle = check expected.cloneWithType(r4:Bundle);
+
+    r4:BundleEntry[] actualEntries = actualBundle.entry ?: [];
+    r4:BundleEntry[] expectedEntries = expectedBundle.entry ?: [];
+    test:assertEquals(actualEntries.length(), expectedEntries.length(), "Batch response entry count mismatch.");
+
+    foreach int i in 0 ..< expectedEntries.length() {
+        anydata expectedResource = expectedEntries[i]?.'resource;
+        anydata actualResource = actualEntries[i]?.'resource;
+        r4:Parameters expectedParams = check expectedResource.cloneWithType(r4:Parameters);
+        r4:Parameters actualParams = check actualResource.cloneWithType(r4:Parameters);
+        _ = assertParametersEqual(expectedParams, actualParams);
+    }
+}
+
 function assertValueSetExpansionsEqual(r4:ValueSetExpansion? expected, r4:ValueSetExpansion? actual) returns boolean {
     if expected is () && actual is () {
         return true;
@@ -139,9 +169,14 @@ function assertValueSetExpansionsEqual(r4:ValueSetExpansion? expected, r4:ValueS
         test:assertFail("ValueSetExpansion is empty or missing.");
     }
 
-    // Compare simple fields using assertEquals
-    test:assertEquals(expected.identifier, actual.identifier, "ValueSetExpansion identifier mismatch.");
-    test:assertEquals(expected.timestamp, actual.timestamp, "ValueSetExpansion timestamp mismatch.");
+    // identifier and timestamp are generated fresh on every call (a random
+    // UUID and the current time, per spec) - asserting an exact value would
+    // mean no implementation could ever pass this test twice in a row.
+    // Check presence/format instead of an exact match.
+    string? identifier = actual.identifier;
+    test:assertTrue(identifier is string && identifier.startsWith("urn:uuid:"), "ValueSetExpansion identifier missing or not a urn:uuid.");
+    string? timestamp = actual.timestamp;
+    test:assertTrue(timestamp is string && timestamp.length() > 0, "ValueSetExpansion timestamp missing.");
     test:assertEquals(expected.total, actual.total, "ValueSetExpansion total mismatch.");
     test:assertEquals(expected.offset, actual.offset, "ValueSetExpansion offset mismatch.");
 

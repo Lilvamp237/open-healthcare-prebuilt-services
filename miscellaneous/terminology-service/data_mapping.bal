@@ -32,7 +32,7 @@ type ConceptAttributeRelationship record {|
     string? valueDisplay;
 |};
 
-isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts, r4:CodeSystem? cs = (), r4:CodeSystemConcept? parentConcept = (), r4:CodeSystemConcept[] childConcepts = [], ConceptAttributeRelationship[] attributeRelationships = []) returns r4:Parameters {
+isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeSystemConcept concepts, r4:CodeSystem? cs = (), r4:CodeSystemConcept[] parentConcepts = [], r4:CodeSystemConcept[] childConcepts = [], ConceptAttributeRelationship[] attributeRelationships = []) returns r4:Parameters {
     // Per the FHIR $lookup convention, "name" is normally the CodeSystem's
     // computer-friendly name. But when version is itself a canonical URI (the
     // convention SNOMED CT uses to disambiguate editions - see
@@ -101,12 +101,12 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
             });
         }
 
-        if parentConcept is r4:CodeSystemConcept {
+        foreach var parent in parentConcepts {
             r4:ParametersParameter[] parentPart = [{name: "code", valueCode: "parent"}];
-            if parentConcept.display is string {
-                parentPart.push({name: "description", valueString: <string>parentConcept.display});
+            if parent.display is string {
+                parentPart.push({name: "description", valueString: <string>parent.display});
             }
-            parentPart.push({name: "value", valueCode: parentConcept.code});
+            parentPart.push({name: "value", valueCode: parent.code});
             (<r4:ParametersParameter[]>parameters.'parameter).push({name: "property", part: parentPart});
         }
 
@@ -199,12 +199,12 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
                 });
             }
 
-            if parentConcept is r4:CodeSystemConcept {
+            foreach var parent in parentConcepts {
                 r4:ParametersParameter[] parentPart = [{name: "code", valueCode: "parent"}];
-                if parentConcept.display is string {
-                    parentPart.push({name: "description", valueString: <string>parentConcept.display});
+                if parent.display is string {
+                    parentPart.push({name: "description", valueString: <string>parent.display});
                 }
-                parentPart.push({name: "value", valueCode: parentConcept.code});
+                parentPart.push({name: "value", valueCode: parent.code});
                 (<r4:ParametersParameter[]>p).push({name: "property", part: parentPart});
             }
 
@@ -245,7 +245,7 @@ isolated function codesystemConceptsToParameters(r4:CodeSystemConcept[]|r4:CodeS
             if item.designation is r4:CodeSystemConceptDesignation[] {
                 foreach var desg in <r4:CodeSystemConceptDesignation[]>item.designation {
                     r4:ParametersParameter result = designationToParameter(desg);
-                    (<r4:ParametersParameter[]>parameters.'parameter).push(result);
+                    p.push(result);
                 }
             }
         }

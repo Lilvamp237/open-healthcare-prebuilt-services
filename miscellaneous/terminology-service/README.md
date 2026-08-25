@@ -31,12 +31,13 @@ The service exposes the following main endpoints under `/fhir/r4`:
 - `GET /ValueSet/{id}/$validate-code` — Validate a code by ValueSet ID.
 - `GET /ValueSet/{id}` — Retrieve a ValueSet by ID.
 - `GET /ValueSet` — Search ValueSets.
-- `POST /ValueSet` — Create a new ValueSet.
+- `POST /ValueSet` — Create a new ValueSet. `version` is optional, per the FHIR spec.
 
 ### CodeSystem
 
 - `GET /CodeSystem/$lookup` — Lookup a code in a CodeSystem.
-  - Returns `parent` and `child` properties for CodeSystems that store hierarchy, along with the `abstract` and `inactive` flags derived from concept properties.
+  - Returns one `parent` property per direct is-a parent (a concept can have more than one — e.g. SNOMED) and one `child` property per direct child, for CodeSystems that store hierarchy, along with the `abstract` and `inactive` flags derived from concept properties.
+  - For SNOMED, also returns non-is-a clinical attribute relationships (e.g. Finding site, Associated morphology) as `property` entries, resolved from the imported Relationship data.
 
 - `POST /CodeSystem/$lookup` — Lookup with a POST body.
 - `GET /CodeSystem/$subsumes` — Test subsumption relationships.
@@ -44,7 +45,7 @@ The service exposes the following main endpoints under `/fhir/r4`:
 - `GET /CodeSystem/{id}/$lookup` — Lookup by CodeSystem ID.
 - `GET /CodeSystem/{id}` — Retrieve a CodeSystem by ID.
 - `GET /CodeSystem` — Search CodeSystems.
-- `POST /CodeSystem` — Create a new CodeSystem.
+- `POST /CodeSystem` — Create a new CodeSystem. `version` is optional, per the FHIR spec.
 
 ### ConceptMap
 

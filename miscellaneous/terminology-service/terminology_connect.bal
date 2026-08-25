@@ -24,6 +24,7 @@ import ballerina/time;
 import ballerina/uuid;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.terminology;
+import ballerinax/health.fhir.r4.validator;
 
 final TerminologySource terminology_source = new TerminologySource();
 
@@ -218,6 +219,15 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         return mutable;
     }
 
+    // expansion.identifier just marks which expansion response this is - unlike
+    // the per-entry system/abstract/inactive back-fill and activeOnly filtering
+    // below, it doesn't depend on resolving a single uniform system across every
+    // compose.include, so it must be set unconditionally rather than after the
+    // csUrl-resolution early return further down.
+    if expansion.identifier is () {
+        expansion.identifier = "urn:uuid:" + uuid:createType4AsString();
+    }
+
     string? csUrl = ();
     if sourceVs is r4:ValueSet {
         r4:ValueSetCompose? compose = sourceVs.compose;
@@ -246,9 +256,6 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
     r4:ValueSetExpansionContains[]? contains = expansion.contains;
     if contains is () {
         return mutable;
-    }
-    if expansion.identifier is () {
-        expansion.identifier = "urn:uuid:" + uuid:createType4AsString();
     }
 
     foreach int i in 0 ..< contains.length() {
@@ -304,6 +311,15 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         int|error countVal = int:fromString(countParam[0].value);
         if countVal is int {
             expParams.push({name: "count", valueInteger: countVal});
+        }
+    }
+
+    // Echo back the requested offset if client sent one
+    r4:RequestSearchParameter[]? offsetParam = requestParams["offset"];
+    if offsetParam is r4:RequestSearchParameter[] && offsetParam.length() > 0 {
+        int|error offsetVal = int:fromString(offsetParam[0].value);
+        if offsetVal is int {
+            expParams.push({name: "offset", valueInteger: offsetVal});
         }
     }
 
@@ -470,18 +486,18 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
                 httpStatusCode = http:STATUS_BAD_REQUEST);
     }
 
-    r4:CodeSystemConcept? parentConcept = ();
+    r4:CodeSystemConcept[] parentConcepts = [];
     r4:CodeSystemConcept[] childConcepts = [];
     ConceptAttributeRelationship[] attributeRelationships = [];
     if cs is r4:CodeSystem && cs.url is r4:uri {
-        [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+        [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] hierarchy =
                 getConceptHierarchy(<r4:uri>cs.url, <r4:code>codeValue, 'version);
-        parentConcept = hierarchy[0];
+        parentConcepts = hierarchy[0];
         childConcepts = hierarchy[1];
         attributeRelationships = getConceptAttributeRelationships(<r4:uri>cs.url, <r4:code>codeValue, 'version);
     }
 
-    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts, attributeRelationships);
+    return codesystemConceptsToParameters(result, cs, parentConcepts, childConcepts, attributeRelationships);
 }
 
 public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
@@ -550,18 +566,34 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
         }
     }
 
-    r4:CodeSystemConcept? parentConcept = ();
+    r4:CodeSystemConcept[] parentConcepts = [];
     r4:CodeSystemConcept[] childConcepts = [];
     ConceptAttributeRelationship[] attributeRelationships = [];
     if system is r4:uri && effectiveCode is r4:code {
-        [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+        [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] hierarchy =
                 getConceptHierarchy(system, effectiveCode, 'version);
-        parentConcept = hierarchy[0];
+        parentConcepts = hierarchy[0];
         childConcepts = hierarchy[1];
         attributeRelationships = getConceptAttributeRelationships(system, effectiveCode, 'version);
     }
 
-    return codesystemConceptsToParameters(result, cs, parentConcept, childConcepts, attributeRelationships);
+    return codesystemConceptsToParameters(result, cs, parentConcepts, childConcepts, attributeRelationships);
+}
+
+// True if codeValue is a Coding with no system, or a CodeableConcept
+// containing at least one Coding with no system - either shape reaches the
+// same unguarded cast inside the library's valueSetLookUp.
+isolated function hasCodingWithoutSystem(r4:Coding|r4:CodeableConcept codeValue) returns boolean {
+    if codeValue is r4:Coding {
+        return codeValue.system is ();
+    } else if codeValue is r4:CodeableConcept {
+        foreach r4:Coding c in (codeValue.coding ?: []) {
+            if c.system is () {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // terminology:valueSetLookUp discards the ValueSet resource it's given beyond
@@ -687,6 +719,22 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
     }
 
     if valueSet is r4:ValueSet && (codingValue is r4:Coding || codingValue is r4:CodeableConcept) {
+        // terminology:valueSetLookUp force-casts each coding's system to a
+        // non-nil type with no null check (see the library's utils.bal,
+        // findConceptsInValueSetFromCodeValue) - a Coding with no system
+        // panics the whole server instead of returning a handled error. Per
+        // the FHIR spec (and the tx-ecosystem "no system" conformance test),
+        // a Coding with no system simply can't be validated - short-circuit
+        // to that clean, expected failure before ever reaching the call.
+        if hasCodingWithoutSystem(codingValue) {
+            return r4:createFHIRError(
+                    "Can not find any valid concepts for the code: Coding has no system",
+                    r4:ERROR,
+                    r4:PROCESSING_NOT_FOUND,
+                    diagnostic = "Coding has no system. A code with no system has no defined meaning, and it cannot be validated. A system should be provided.",
+                    httpStatusCode = http:STATUS_NOT_FOUND);
+        }
+
         // Try the library's own lookup first - when the inline ValueSet's url
         // happens to match something already persisted, this returns the full,
         // richly-populated concept (definition, properties, designations) that
@@ -705,18 +753,18 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
         r4:uri? effectiveSystem = codingValue is r4:Coding ? codingValue.system : system;
         r4:code? effectiveCode = codingValue is r4:Coding ? codingValue.code : code;
 
-        r4:CodeSystemConcept? parentConcept = ();
+        r4:CodeSystemConcept[] parentConcepts = [];
         r4:CodeSystemConcept[] childConcepts = [];
         ConceptAttributeRelationship[] attributeRelationships = [];
         if effectiveSystem is r4:uri && effectiveCode is r4:code {
-            [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] hierarchy =
+            [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] hierarchy =
                     getConceptHierarchy(effectiveSystem, effectiveCode, 'version);
-            parentConcept = hierarchy[0];
+            parentConcepts = hierarchy[0];
             childConcepts = hierarchy[1];
             attributeRelationships = getConceptAttributeRelationships(effectiveSystem, effectiveCode, 'version);
         }
 
-        return codesystemConceptsToParameters(result, parentConcept = parentConcept, childConcepts = childConcepts, attributeRelationships = attributeRelationships);
+        return codesystemConceptsToParameters(result, parentConcepts = parentConcepts, childConcepts = childConcepts, attributeRelationships = attributeRelationships);
     }
     return r4:createFHIRError(
             "Invalid request payload",
@@ -893,6 +941,17 @@ public isolated function translateGet(r4:FHIRContext ctx) returns r4:Parameters|
     r4:code? code = params["code"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["code"])[0].value : ();
     string? 'version = params["version"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["version"])[0].value : ();
 
+    // Non-standard convenience aliases the tx-ecosystem test suite also sends:
+    // sourceSystem/targetSystem name the CodeSystem on each side directly
+    // (rather than a ValueSet canonical url) - our ConceptMap matching treats
+    // source/target as an opaque scope key either way, so this just widens
+    // what can populate that key. sourceCode is the code being translated,
+    // scoped by sourceSystem. Real source/system/code/target win if present.
+    sourceValueSetUri = sourceValueSetUri ?: (params["sourceSystem"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["sourceSystem"])[0].value : ());
+    targetValueSetUri = targetValueSetUri ?: (params["targetSystem"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["targetSystem"])[0].value : ());
+    system = system ?: (params["sourceSystem"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["sourceSystem"])[0].value : ());
+    code = code ?: (params["sourceCode"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>params["sourceCode"])[0].value : ());
+
     r4:CodeableConcept? codesToTranslate = ();
     if code is r4:code && system is r4:uri {
         codesToTranslate = {coding: [{system: system, code: code, 'version: 'version}]};
@@ -909,6 +968,11 @@ public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters paramet
     string? 'version = ();
     r4:Coding? codingValue = ();
     r4:CodeableConcept? codeableConceptValue = ();
+    // Non-standard convenience aliases the tx-ecosystem test suite also sends
+    // (see translateGet for why these are safe to treat as source/system/target).
+    r4:uri? sourceSystemAlias = ();
+    r4:code? sourceCodeAlias = ();
+    r4:uri? targetSystemAlias = ();
 
     r4:Parameters|error typedParams = parameters.toJson().cloneWithType(r4:Parameters);
     if typedParams is error {
@@ -947,6 +1011,15 @@ public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters paramet
                 "codeableConcept" => {
                     codeableConceptValue = item.valueCodeableConcept;
                 }
+                "sourceSystem" => {
+                    sourceSystemAlias = item.valueUri ?: item.valueString;
+                }
+                "sourceCode" => {
+                    sourceCodeAlias = item.valueCode ?: item.valueString;
+                }
+                "targetSystem" => {
+                    targetSystemAlias = item.valueUri ?: item.valueString;
+                }
             }
         }
     } else {
@@ -956,6 +1029,12 @@ public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters paramet
                 r4:INVALID_REQUIRED,
                 httpStatusCode = http:STATUS_BAD_REQUEST);
     }
+
+    // Real source/system/code/target win if present; the aliases only fill gaps.
+    sourceValueSetUri = sourceValueSetUri ?: sourceSystemAlias;
+    targetValueSetUri = targetValueSetUri ?: targetSystemAlias;
+    system = system ?: sourceSystemAlias;
+    code = code ?: sourceCodeAlias;
 
     r4:CodeableConcept? codesToTranslate = ();
     if codeableConceptValue is r4:CodeableConcept {
@@ -1077,7 +1156,43 @@ isolated function getSystemAndCode(string input) returns map<string> {
 
 public isolated function addCodeSystem(r4:FHIRContext ctx, r4:CodeSystem codeSystem) returns r4:FHIRError? {
     do {
-        return terminology:addCodeSystem(codeSystem, terminology = terminology_source);
+        // Not using terminology:addCodeSystem directly: it hard-rejects a CodeSystem
+        // with no version, but FHIR allows an unversioned CodeSystem. Re-implement
+        // the same url-check/validate/duplicate-check flow, minus the version check.
+        if codeSystem.url == () {
+            return r4:createFHIRError(
+                    string `Cannot find the URL of the CodeSystem with name: ${codeSystem.name.toString()}`,
+                    r4:ERROR,
+                    r4:INVALID_REQUIRED,
+                    diagnostic = string `Add a proper URL for the resource: http://hl7.org/fhir/R4/codesystem-definitions.html#CodeSystem.url`,
+                    errorType = r4:VALIDATION_ERROR,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        r4:FHIRValidationError? validateResult = validator:validate(codeSystem.clone(), r4:CodeSystem);
+        if validateResult is r4:FHIRValidationError {
+            return r4:createFHIRError(
+                    "Validation failed",
+                    r4:ERROR,
+                    r4:INVALID,
+                    diagnostic = string `Check whether the data conforms to the specification: http://hl7.org/fhir/R4/codesystem-definitions.html`,
+                    errorType = r4:VALIDATION_ERROR,
+                    cause = validateResult,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        string url = <string>codeSystem.url;
+        if terminology_source.isCodeSystemExist(url, codeSystem.version ?: "") {
+            return r4:createFHIRError(
+                    "Duplicate entry",
+                    r4:ERROR,
+                    r4:PROCESSING_DUPLICATE,
+                    diagnostic = string `There is an already existing CodeSystem in the registry with the URL: ${url}`,
+                    errorType = r4:PROCESSING_ERROR,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        return terminology_source.addCodeSystem(codeSystem.clone());
     } on fail var e {
         return r4:createFHIRError(
                 "Invalid request payload, " + e.message(),
@@ -1090,7 +1205,43 @@ public isolated function addCodeSystem(r4:FHIRContext ctx, r4:CodeSystem codeSys
 
 public isolated function addValueSet(r4:FHIRContext ctx, r4:ValueSet valueSet) returns r4:FHIRError? {
     do {
-        return terminology:addValueSet(valueSet, terminology = terminology_source);
+        // Not using terminology:addValueSet directly: it hard-rejects a ValueSet
+        // with no version, but FHIR allows an unversioned ValueSet. Re-implement
+        // the same url-check/validate/duplicate-check flow, minus the version check.
+        if valueSet.url == () {
+            return r4:createFHIRError(
+                    string `Cannot find the URL of the ValueSet with name: ${valueSet.name.toString()}`,
+                    r4:ERROR,
+                    r4:INVALID_REQUIRED,
+                    diagnostic = "Add a proper URL for the resource: http://hl7.org/fhir/R4/valueset-definitions.html#ValueSet.url",
+                    errorType = r4:VALIDATION_ERROR,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        r4:FHIRValidationError? validateResult = validator:validate(valueSet.clone(), r4:ValueSet);
+        if validateResult is r4:FHIRValidationError {
+            return r4:createFHIRError(
+                    "Validation failed",
+                    r4:ERROR,
+                    r4:INVALID,
+                    diagnostic = string `Check whether the data conforms to the specification: http://hl7.org/fhir/R4/valueset-definitions.html`,
+                    errorType = r4:VALIDATION_ERROR,
+                    cause = validateResult,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        string url = <string>valueSet.url;
+        if terminology_source.isValueSetExist(url, valueSet.version ?: "") {
+            return r4:createFHIRError(
+                    "Duplicate entry",
+                    r4:ERROR,
+                    r4:PROCESSING_DUPLICATE,
+                    diagnostic = string `Already there is a ValueSet exists in the registry with the URL: ${url}`,
+                    errorType = r4:PROCESSING_ERROR,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
+
+        return terminology_source.addValueSet(valueSet.clone());
     } on fail var e {
         return r4:createFHIRError(
                 "Invalid request payload, " + e.message(),

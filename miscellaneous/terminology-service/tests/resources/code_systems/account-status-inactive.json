@@ -2,16 +2,45 @@
     "resourceType": "Parameters",
     "parameter": [
         {
-            "name": "name",
-            "valueString": "inactive"
+            "name": "abstract",
+            "valueBoolean": false
+        },
+        {
+            "valueCode": "inactive",
+            "name": "code"
+        },
+        {
+            "name": "definition",
+            "valueString": "This account is inactive and should not be used to track financial information."
         },
         {
             "name": "display",
             "valueString": "Inactive"
         },
         {
-            "name": "definition",
-            "valueString": "This account is inactive and should not be used to track financial information."
+            "name": "name",
+            "valueString": "AccountStatus"
+        },
+        {
+            "name": "property",
+            "part": [
+                {
+                    "valueCode": "inactive",
+                    "name": "code"
+                },
+                {
+                    "name": "value",
+                    "valueBoolean": false
+                }
+            ]
+        },
+        {
+            "name": "system",
+            "valueUri": "http://hl7.org/fhir/account-status"
+        },
+        {
+            "name": "version",
+            "valueString": "4.0.1"
         }
     ]
 }

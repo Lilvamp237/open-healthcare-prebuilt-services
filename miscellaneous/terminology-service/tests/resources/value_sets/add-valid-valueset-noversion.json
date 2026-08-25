@@ -1,0 +1,15 @@
+{
+    "resourceType": "ValueSet",
+    "id": "test-noversion-vs",
+    "url": "http://example.org/fhir/ValueSet/test-noversion-vs",
+    "name": "TestNoVersionValueSet",
+    "title": "Test ValueSet Without a Version",
+    "status": "active",
+    "compose": {
+      "include": [
+        {
+          "system": "http://example.org/fhir/CodeSystem/test-noversion-cs"
+        }
+      ]
+    }
+  }

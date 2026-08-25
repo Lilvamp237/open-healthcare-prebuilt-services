@@ -2,36 +2,19 @@
     "resourceType": "Parameters",
     "parameter": [
         {
-            "name": "name",
-            "valueString": "example-code"
+            "name": "abstract",
+            "valueBoolean": false
         },
         {
-            "name": "display",
-            "valueString": "Example Code"
-        },
-        {
-            "name": "property",
-            "part": [
-                {
-                    "name": "code",
-                    "valueCode": "example-property-code"
-                },
-                {
-                    "name": "value",
-                    "valueString": "example-property-value"
-                }
-            ]
+            "valueCode": "example-code",
+            "name": "code"
         },
         {
             "name": "designation",
             "part": [
                 {
-                    "name": "language",
-                    "valueCode": "en"
-                },
-                {
-                    "name": "value",
-                    "valueString": "Example Designation"
+                    "valueCode": "en",
+                    "name": "language"
                 },
                 {
                     "name": "use",
@@ -39,6 +22,44 @@
                         "system": "http://example.org",
                         "code": "example-use-code"
                     }
+                },
+                {
+                    "name": "value",
+                    "valueString": "Example Designation"
+                }
+            ]
+        },
+        {
+            "name": "display",
+            "valueString": "Example Code"
+        },
+        {
+            "name": "name",
+            "valueString": ""
+        },
+        {
+            "name": "property",
+            "part": [
+                {
+                    "valueCode": "inactive",
+                    "name": "code"
+                },
+                {
+                    "name": "value",
+                    "valueBoolean": false
+                }
+            ]
+        },
+        {
+            "name": "property",
+            "part": [
+                {
+                    "valueCode": "example-property-code",
+                    "name": "code"
+                },
+                {
+                    "name": "value",
+                    "valueString": "example-property-value"
                 }
             ]
         }

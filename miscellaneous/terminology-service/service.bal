@@ -454,6 +454,10 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                     "incomplete": false,
                     "parameter": [
                         {
+                            "name": "activeOnly",
+                            "documentation": "When true, drops inactive concepts from the expansion and recomputes expansion.total. Concepts are included by default unless the ValueSet's own compose says otherwise."
+                        },
+                        {
                             "name": "url",
                             "documentation": "Canonical URL of the ValueSet to expand. Resolved via the database. Required when no ValueSet is provided inline and no {id} path parameter is used."
                         },
@@ -503,21 +507,6 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                         documentation: "FHIR Terminology Service REST interface.",
                         'resource: [
                             {
-                                'type: "ValueSet",
-                                interaction: [
-                                    {code: "read"},
-                                    {code: "search-type"},
-                                    {code: "create"},
-                                    {code: "update"},
-                                    {code: "delete"},
-                                    {code: "patch"}
-                                ],
-                                operation: [
-                                    {name: "expand", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-expand"},
-                                    {name: "validate-code", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code"}
-                                ]
-                            },
-                            {
                                 'type: "CodeSystem",
                                 interaction: [
                                     {code: "read"},
@@ -531,7 +520,27 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                                     {name: "lookup", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup"},
                                     {name: "subsumes", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes"}
                                 ]
+                            },
+                            {
+                                'type: "ValueSet",
+                                interaction: [
+                                    {code: "read"},
+                                    {code: "search-type"},
+                                    {code: "create"},
+                                    {code: "update"},
+                                    {code: "delete"},
+                                    {code: "patch"}
+                                ],
+                                operation: [
+                                    {name: "expand", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-expand"},
+                                    {name: "validate-code", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code"}
+                                ]
                             }
+                        ],
+                        // $versions is implemented (see the /$versions listener below) but
+                        // wasn't declared here - a base-level (not resource-scoped) operation.
+                        operation: [
+                            {name: "versions", definition: "https://github.com/wso2/open-healthcare-prebuilt-services/tree/main/miscellaneous/terminology-service#versions"}
                         ]
                     }
                 ]

@@ -199,7 +199,7 @@ public function testHierarchyEmittedAsParentAndChildProperties() {
         {code: "code2aII", display: "Display 2aII"}
     ];
 
-    r4:Parameters result = codesystemConceptsToParameters(concept, (), parent, children);
+    r4:Parameters result = codesystemConceptsToParameters(concept, (), [parent], children);
 
     string[] parentValues = [];
     string[] childValues = [];
@@ -223,5 +223,36 @@ public function testHierarchyEmittedAsParentAndChildProperties() {
 
     test:assertEquals(parentValues, ["code2"]);
     test:assertEquals(childValues, ["code2aI", "code2aII"]);
+}
+
+// A concept can have more than one is-a parent (e.g. SNOMED) - verifies that
+// codesystemConceptsToParameters emits one "parent" property entry per parent,
+// not just the first one.
+@test:Config {
+    groups: ["unit", "lookup_shape", "successful_scenario"]
+}
+public function testMultipleParentsEmittedAsSeparatePropertyEntries() {
+    r4:CodeSystemConcept concept = {code: "10000006", display: "Radiating chest pain"};
+    r4:CodeSystemConcept[] parents = [
+        {code: "29857009", display: "Chest pain"},
+        {code: "9972008", display: "Radiating pain"}
+    ];
+
+    r4:Parameters result = codesystemConceptsToParameters(concept, (), parents);
+
+    string[] parentValues = [];
+    foreach r4:ParametersParameter param in findAllParams(result, "property") {
+        r4:ParametersParameter? codePart = findPart(param, "code");
+        r4:ParametersParameter? valuePart = findPart(param, "value");
+        if codePart is () || valuePart is () {
+            continue;
+        }
+        r4:code? propertyValue = valuePart.valueCode;
+        if codePart.valueCode == "parent" && propertyValue is r4:code {
+            parentValues.push(propertyValue);
+        }
+    }
+
+    test:assertEquals(parentValues, ["29857009", "9972008"]);
 }
 

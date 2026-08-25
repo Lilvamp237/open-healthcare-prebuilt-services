@@ -141,7 +141,7 @@ public function lookupCodeSystem1() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnCodeSystemData("account-status-inactive");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -154,7 +154,7 @@ public function lookupCodeSystem3() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnCodeSystemData("account-status-inactive");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -215,18 +215,24 @@ public function lookupCodeSystem8() returns error? {
     http:Response response = check csClient->post("/$lookup", {}, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid operation payload due to Payload for operation \"$lookup\" is not a valid \"Parameters\" or \"Bundle\" resource. Please provide a valid resource as the payload.");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Invalid operation payload due to Payload must be a valid FHIR Parameters or Bundle resource.");
 }
 
 @test:Config {
     groups: ["codesystem", "lookup_codesystem", "failure_scenario"]
 }
 public function lookupCodeSystem9() returns error? {
+    // $lookup now tolerates unrecognised parameters (lenientOperationPreProcessor,
+    // conformance_shim.bal) rather than rejecting them outright - "sample" is
+    // simply ignored, and the request fails instead because no coding/system+code
+    // was actually provided.
     r4:Parameters parameters = {'parameter: [{name: "sample"}]};
     http:Response response = check csClient->post("/$lookup", parameters, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Unknown operation parameter due to Unknown parameter \"sample\" for operation \"$lookup\". Known parameters for \"$lookup\" operation: [\"code\",\"system\",\"version\",\"coding\",\"date\",\"displayLanguage\",\"property\"].");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Can not find a CodeSystem due to Provide either a 'coding' parameter or 'system' and 'code' parameters");
 }
 
 @test:Config {
@@ -239,7 +245,8 @@ public function lookupCodeSystem10() returns error? {
     http:Response response = check csClient->post("/$lookup", parameters, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Can not find a CodeSystem");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Can not find a CodeSystem due to Provide either a 'coding' parameter or 'system' and 'code' parameters");
 }
 
 @test:Config {
@@ -446,7 +453,7 @@ public function validateCodeValueSet1() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -458,7 +465,7 @@ public function validateCodeValueSet2() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -469,7 +476,7 @@ public function validateCodeValueSet3() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -481,7 +488,7 @@ public function validateCodeValueSet4() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -494,7 +501,7 @@ public function validateCodeValueSet5() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -516,9 +523,8 @@ public function validateCodeValueSet7() returns error? {
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
 
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid operation payload due to Payload " +
-            "for operation \"$validate-code\" is not a valid \"Parameters\" or \"Bundle\" resource. Please provide a valid " +
-            "resource as the payload.");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Invalid operation payload due to Payload must be a valid FHIR Parameters or Bundle resource.");
 }
 
 @test:Config {
@@ -530,7 +536,8 @@ public function validateCodeValueSet8() returns error? {
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
 
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid request payload");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Invalid request payload due to Provide (coding|codeableConcept) or (system+code), and (valueSet resource) or (url).");
 }
 
 @test:Config {
@@ -553,7 +560,7 @@ public function validateCodeValueSet10() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -565,7 +572,7 @@ public function validateCodeValueSet11() returns error? {
     json actual = check response.getJsonPayload();
 
     json expected = returnValueSetData("validate-code");
-    test:assertEquals(actual, expected);
+    check assertParametersJsonEqual(actual, expected);
 }
 
 @test:Config {
@@ -639,7 +646,8 @@ public function expandValueSet5() returns error? {
 
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
-    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid operation payload due to Payload for operation \"$expand\" is not a valid \"Parameters\" or \"Bundle\" resource. Please provide a valid resource as the payload.");
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Invalid operation payload due to Payload must be a valid FHIR Parameters or Bundle resource.");
 }
 
 @test:Config {
@@ -704,6 +712,22 @@ public function expandValueSet9() returns error? {
     test:assertTrue(assertValueSetExpansionsEqual(expected.expansion, actual.expansion), "ValueSet expansions are not equal");
 }
 
+// A client-supplied offset should be echoed back on expansion.parameter, the
+// same way count already is - lets a client confirm which page it got back.
+@test:Config {
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function expandValueSetEchoesRequestedOffset() returns error? {
+    http:Response response = check vsClient->get("/$expand?url=http://hl7.org/fhir/ValueSet/account-status&offset=1&count=2", ());
+    json actualJson = check response.getJsonPayload();
+    r4:ValueSet actual = check actualJson.cloneWithType(r4:ValueSet);
+
+    r4:ValueSetExpansionParameter[] expansionParams = (<r4:ValueSetExpansion>actual.expansion).'parameter ?: [];
+    r4:ValueSetExpansionParameter[] offsetParams = expansionParams.filter(p => p.name == "offset");
+    test:assertEquals(offsetParams.length(), 1, "Expected exactly one 'offset' entry in expansion.parameter");
+    test:assertEquals(offsetParams[0].valueInteger, 1);
+}
+
 @test:Config {
     dependsOn: [testAddValidValueSet4],
     groups: ["valueset", "expand_valueset", "successful_scenario"]
@@ -730,7 +754,7 @@ public function testCodeSystemConceptPropertiesAndDesignations() returns error? 
     json actualJson = parameters.toJson();
 
     json expectedJson = returnCodeSystemData("designation-expected");
-    test:assertEquals(actualJson, expectedJson);
+    check assertParametersJsonEqual(actualJson, expectedJson);
 }
 
 @test:Config {
@@ -753,7 +777,7 @@ public function testCodeSystemConceptsArray() returns error? {
     json actualJson = parameters.toJson();
 
     json expectedJson = returnCodeSystemData("concepts-array-expected");
-    test:assertEquals(actualJson, expectedJson);
+    check assertParametersJsonEqual(actualJson, expectedJson);
 }
 
 @test:Config {
@@ -764,7 +788,7 @@ public function testBatchValidateValueSetsValid() returns error? {
     json expectedResponse = returnBatchData("valid-batch-response");
 
     http:Response response = check baseClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
-    test:assertEquals(response.getJsonPayload(), expectedResponse);
+    check assertBatchResponseJsonEqual(check response.getJsonPayload(), expectedResponse);
 }
 
 @test:Config {
@@ -827,6 +851,19 @@ public function testAddValidCodeSystemJson() returns error? {
     http:Response response = check csClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
 
     // check the response status code is 201 or not
+    test:assertEquals(response.statusCode, 201);
+}
+
+// FHIR does not require CodeSystem.version - a CodeSystem with no version must
+// still be creatable.
+@test:Config {
+    groups: ["codesystem", "add_codesystem", "successful_scenario"]
+}
+public function testAddValidCodeSystemWithoutVersion() returns error? {
+    json requestPayload = returnCodeSystemData("add-valid-codesystem-noversion");
+
+    http:Response response = check csClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
+
     test:assertEquals(response.statusCode, 201);
 }
 
@@ -903,6 +940,19 @@ public function testAddValidValueSet() returns error? {
     http:Response response = check vsClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
 
     // check the response status code is 201 or not
+    test:assertEquals(response.statusCode, 201);
+}
+
+// FHIR does not require ValueSet.version - a ValueSet with no version must
+// still be creatable.
+@test:Config {
+    groups: ["valueset", "add_valueset", "successful_scenario"]
+}
+public function testAddValidValueSetWithoutVersion() returns error? {
+    json requestPayload = returnValueSetData("add-valid-valueset-noversion");
+
+    http:Response response = check vsClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
+
     test:assertEquals(response.statusCode, 201);
 }
 

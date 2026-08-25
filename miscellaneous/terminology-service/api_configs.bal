@@ -1061,6 +1061,9 @@ final r4:ResourceAPIConfig conceptMapApiConfig = {
         {
             name: "translate",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid", or "sourceSystem"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             parameters: [
                 {
                     name: "url",

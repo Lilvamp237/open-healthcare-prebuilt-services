@@ -454,7 +454,7 @@ public isolated class TerminologySource {
                             foreach r4:ValueSetComposeIncludeFilter f in incFilters {
                                 r4:ValueSetExpansionContains[] members = [];
                                 match f.op {
-                                    "is-a" | "descendent-of" if f.property == "concept" => {
+                                    "is-a"|"descendent-of" if f.property == "concept" => {
                                         members = hasClosureRows(filterCs.codeSystemId)
                                             ? closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter)
                                             : parentWalkDescendants(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
@@ -1029,8 +1029,91 @@ isolated function intersectByCode(r4:ValueSetExpansionContains[] a, r4:ValueSetE
 isolated function stringEquals(string actual, string target) returns boolean => actual == target;
 
 // Full-string regex match (Java Pattern semantics), used as the comparator
-// for the `regex` filter operator.
-isolated function regexMatches(string actual, string pattern) returns boolean => regex:matches(actual, pattern);
+// for the `regex` filter operator. Client-supplied patterns that look
+// catastrophically-backtracking are rejected (treated as a non-match) rather
+// than evaluated - see isPathologicalRegex.
+isolated function regexMatches(string actual, string pattern) returns boolean {
+    if isPathologicalRegex(pattern) {
+        return false;
+    }
+    return regex:matches(actual, pattern);
+}
+
+// Heuristically flags "obviously pathological" regex patterns before they
+// ever reach the (backtracking) regex engine - specifically, a quantifier
+// (+, *, {n,m}) applied directly around a group whose own content already
+// contains a quantifier, e.g. ((a+)+)+. That shape is the textbook trigger
+// for catastrophic backtracking: on a long input that almost-but-doesn't
+// match, a backtracking engine (Java's java.util.regex, which regex:matches
+// is backed by) can take exponential time working through every way to
+// split the input among the nested repetitions - even a few dozen
+// characters can mean an effectively infinite hang.
+//
+// This is a heuristic, not a full static analysis of the pattern: it catches
+// the common, well-known nested-quantifier family (including the exact shape
+// the HL7 tx-ecosystem "regex-bad" conformance tests probe for), but not
+// every possible ReDoS shape - e.g. ambiguous alternation like (a|ab)*c
+// isn't structurally a nested quantifier, so it passes through unflagged.
+isolated function isPathologicalRegex(string pattern) returns boolean {
+    boolean[] groupHasQuantifier = [];
+    boolean inCharClass = false;
+    int i = 0;
+    int len = pattern.length();
+    while i < len {
+        string c = pattern.substring(i, i + 1);
+
+        if c == "\\" {
+            // Escaped character - skip it and whatever it's escaping without
+            // interpreting either as special.
+            i += 2;
+            continue;
+        }
+
+        if inCharClass {
+            if c == "]" {
+                inCharClass = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == "[" {
+            inCharClass = true;
+            i += 1;
+            continue;
+        }
+
+        if c == "(" {
+            groupHasQuantifier.push(false);
+            i += 1;
+            continue;
+        }
+
+        if c == ")" {
+            boolean hadQuantifier = groupHasQuantifier.length() > 0 ? groupHasQuantifier.remove(groupHasQuantifier.length() - 1) : false;
+            // A quantifier nested inside this group also taints whichever
+            // group encloses it, in case of deeper nesting like (((a+))+)+.
+            if hadQuantifier && groupHasQuantifier.length() > 0 {
+                groupHasQuantifier[groupHasQuantifier.length() - 1] = true;
+            }
+            i += 1;
+            if hadQuantifier && i < len {
+                string next = pattern.substring(i, i + 1);
+                if next == "+" || next == "*" || next == "{" {
+                    return true;
+                }
+            }
+            continue;
+        }
+
+        if c == "+" || c == "*" || c == "{" {
+            foreach int idx in 0 ..< groupHasQuantifier.length() {
+                groupHasQuantifier[idx] = true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
 
 // Scans a CodeSystem's concepts and keeps the ones matching a filter,
 // using the given comparator (exact match or regex) on a code or property
@@ -1424,45 +1507,58 @@ isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns 
     return getStoreConcept(sql:queryConcat(`SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("code"), ` = ${code} AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`));
 }
 
-// Fetch a concept's direct parent (via parentConceptId FK) and direct children
+// Fetch a concept's direct parents (via concept_closure at depth=1, since a
+// concept can have more than one is-a parent - e.g. SNOMED) and direct children
 // (concepts whose parentConceptId points at this concept). Used to emit `parent`
 // and `child` property entries in $lookup responses.
 //
-// Returns [parent, children] — parent is nil if the concept is a root, children
-// is an empty array if the concept has no descendants. Any DB failure returns
-// [(), []] so the caller can still emit a flat lookup response.
+// Returns [parents, children] — both empty arrays if the concept has none. Any
+// DB failure returns [[], []] so the caller can still emit a flat lookup response.
 isolated function getConceptHierarchy(r4:uri system, r4:code code, string? version = ())
-        returns [r4:CodeSystemConcept?, r4:CodeSystemConcept[]] {
+        returns [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
     if storeCs is error {
-        return [(), []];
+        return [[], []];
     }
     int csId = storeCs.codeSystemId;
 
     store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(csId, code);
     if storeConcept is r4:FHIRError {
-        return [(), []];
+        return [[], []];
     }
+    int myConceptId = storeConcept.conceptId;
 
-    // Parent lookup — walk the parentConceptId FK if set
-    r4:CodeSystemConcept? parent = ();
-    int? parentId = storeConcept.parentConceptId;
-    if parentId is int {
-        sql:ParameterizedQuery parentQuery = sql:queryConcat(
-                `SELECT * FROM `, escapeToQuery("concepts"),
-                ` WHERE `, escapeToQuery("conceptId"), ` = ${parentId}`);
-        store_h2:Concept|r4:FHIRError storeParent = getStoreConcept(parentQuery);
-        if storeParent is store_h2:Concept {
-            r4:CodeSystemConcept|error parentConcept = byteToConcept(storeParent.concept);
-            if parentConcept is r4:CodeSystemConcept {
-                parent = parentConcept;
+    // Parent lookup — direct (depth=1) ancestors from concept_closure. Used
+    // instead of the parentConceptId FK, which only ever holds a single parent
+    // and is never populated for SNOMED (a concept can have multiple is-a
+    // parents there); concept_closure is populated correctly and completely by
+    // both the SNOMED and generic nested-CodeSystem import paths.
+    r4:CodeSystemConcept[] parents = [];
+    sql:ParameterizedQuery parentIdsQuery = sql:queryConcat(
+            `SELECT `, escapeToQuery("ancestorConceptId"), ` FROM `, escapeToQuery("concept_closure"),
+            ` WHERE `, escapeToQuery("descendantConceptId"), ` = ${myConceptId}`,
+            ` AND `, escapeToQuery("codeSystemId"), ` = ${csId}`,
+            ` AND `, escapeToQuery("depth"), ` = 1`);
+    stream<record {|int ancestorConceptId;|}, persist:Error?> parentIdStream = sClient->queryNativeSQL(parentIdsQuery);
+    record {|int ancestorConceptId;|}[]|error parentIdRows = from record {|int ancestorConceptId;|} r in parentIdStream
+        select r;
+    if parentIdRows is record {|int ancestorConceptId;|}[] {
+        foreach var row in parentIdRows {
+            sql:ParameterizedQuery parentQuery = sql:queryConcat(
+                    `SELECT * FROM `, escapeToQuery("concepts"),
+                    ` WHERE `, escapeToQuery("conceptId"), ` = ${row.ancestorConceptId}`);
+            store_h2:Concept|r4:FHIRError storeParent = getStoreConcept(parentQuery);
+            if storeParent is store_h2:Concept {
+                r4:CodeSystemConcept|error parentConcept = byteToConcept(storeParent.concept);
+                if parentConcept is r4:CodeSystemConcept {
+                    parents.push(parentConcept);
+                }
             }
         }
     }
 
     // Children lookup — anyone whose parentConceptId points at us
     r4:CodeSystemConcept[] children = [];
-    int myConceptId = storeConcept.conceptId;
     sql:ParameterizedQuery childQuery = sql:queryConcat(
             `SELECT * FROM `, escapeToQuery("concepts"),
             ` WHERE `, escapeToQuery("parentConceptId"), ` = ${myConceptId}`,
@@ -1479,7 +1575,7 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
         }
     }
 
-    return [parent, children];
+    return [parents, children];
 }
 
 // Reads a concept's stored abstract/inactive derivation inputs. abstract is set

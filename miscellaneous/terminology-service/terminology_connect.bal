@@ -28,6 +28,10 @@ import ballerinax/health.fhir.r4.validator;
 
 final TerminologySource terminology_source = new TerminologySource();
 
+# Reads a `CodeSystem` by id, optionally pinned to a version encoded as `id|version`.
+#
+# + id - The `CodeSystem` id, optionally suffixed with `|version`
+# + return - The matching `CodeSystem`, or a `FHIRError` if none is found
 public isolated function readCodeSystemById(string id) returns r4:FHIRError|r4:CodeSystem|r4:FHIRError {
     string[] split = regex:split(id, string `\|`);
     string code_system_id = split[0];
@@ -36,6 +40,10 @@ public isolated function readCodeSystemById(string id) returns r4:FHIRError|r4:C
     return terminology:readCodeSystemById(id = code_system_id, version = code_system_id_version, terminology = terminology_source);
 }
 
+# Reads a `ValueSet` by id, optionally pinned to a version encoded as `id|version`.
+#
+# + id - The `ValueSet` id, optionally suffixed with `|version`
+# + return - The matching `ValueSet`, or a `FHIRError` if none is found
 public isolated function readValueSetById(string id) returns r4:ValueSet|r4:FHIRError {
     string[] split = regex:split(id, string `\|`);
     string value_set_id = split[0];
@@ -44,6 +52,10 @@ public isolated function readValueSetById(string id) returns r4:ValueSet|r4:FHIR
     return terminology:readValueSetById(id = value_set_id, version = value_set_id_version, terminology = terminology_source);
 }
 
+# Reads a `CodeSystem` by canonical url, optionally pinned to a version encoded as `url|version`.
+#
+# + url - The `CodeSystem` canonical url, optionally suffixed with `|version`
+# + return - The matching `CodeSystem`, or a `FHIRError` if none is found
 public isolated function readCodeSystemByUrl(string url) returns r4:CodeSystem|r4:FHIRError {
     string[] split = regex:split(url, string `\|`);
     string code_system_url = split[0];
@@ -52,6 +64,10 @@ public isolated function readCodeSystemByUrl(string url) returns r4:CodeSystem|r
     return terminology:readCodeSystemByUrl(url = code_system_url, version = code_system_url_version, terminology = terminology_source);
 }
 
+# Reads a `ValueSet` by canonical url, optionally pinned to a version encoded as `url|version`.
+#
+# + url - The `ValueSet` canonical url, optionally suffixed with `|version`
+# + return - The matching `ValueSet`, or a `FHIRError` if none is found
 public isolated function readValueSetByUrl(string url) returns r4:ValueSet|r4:FHIRError {
     string[] split = regex:split(url, string `\|`);
     string value_set_url = split[0];
@@ -60,6 +76,10 @@ public isolated function readValueSetByUrl(string url) returns r4:ValueSet|r4:FH
     return terminology:readValueSetByUrl(url = value_set_url, version = value_set_url_version, terminology = terminology_source);
 }
 
+# Reads a `ConceptMap` by canonical url, optionally pinned to a version encoded as `url|version`.
+#
+# + url - The `ConceptMap` canonical url, optionally suffixed with `|version`
+# + return - The matching `ConceptMap`, or a `FHIRError` if none is found
 public isolated function readConceptMapByUrl(string url) returns r4:ConceptMap|r4:FHIRError {
     string[] split = regex:split(url, string `\|`);
     string concept_map_url = split[0];
@@ -68,9 +88,10 @@ public isolated function readConceptMapByUrl(string url) returns r4:ConceptMap|r
     return terminology:readConceptMap(conceptMapUrl = concept_map_url, version = concept_map_url_version, terminology = terminology_source);
 }
 
-// The terminology library only exposes ConceptMap lookup by canonical url
-// (readConceptMap) - there's no by-id counterpart like readCodeSystemById /
-// readValueSetById. Resolved directly against storage instead.
+# Reads a `ConceptMap` by id. The terminology library only exposes ConceptMap lookup by canonical url (readConceptMap) - there's no by-id counterpart like readCodeSystemById / readValueSetById - so this resolves directly against storage instead.
+#
+# + id - The `ConceptMap` id
+# + return - The matching `ConceptMap`, or a `FHIRError` if none is found
 public isolated function readConceptMapById(string id) returns r4:ConceptMap|r4:FHIRError {
     r4:ConceptMap[] results = check searchStoredConceptMaps({"_id": [createRequestSearchParameter("_id", id)]}, (), ());
     if results.length() == 0 {
@@ -84,6 +105,10 @@ public isolated function readConceptMapById(string id) returns r4:ConceptMap|r4:
     return results[0];
 }
 
+# Handles the `ValueSet` search interaction, resolving the request's search parameters through the FHIR context and returning matches as a searchset `Bundle`.
+#
+# + ctx - The `FHIRContext` of the incoming search request
+# + return - A searchset `Bundle` of matching `ValueSet` resources, or a `FHIRError` if the search parameters are invalid or the search fails
 public isolated function searchValueSet(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
 
     map<r4:RequestSearchParameter[]>|error params = getSearchParametersFromFHIRContext(ctx);
@@ -112,6 +137,10 @@ public isolated function searchValueSet(r4:FHIRContext ctx) returns r4:Bundle|r4
     };
 }
 
+# Handles the `CodeSystem` search interaction, resolving the request's search parameters through the FHIR context and returning matches as a searchset `Bundle`.
+#
+# + ctx - The `FHIRContext` of the incoming search request
+# + return - A searchset `Bundle` of matching `CodeSystem` resources, or a `FHIRError` if the search parameters are invalid or the search fails
 public isolated function searchCodeSystem(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
     map<r4:RequestSearchParameter[]>|error clonedParams = params.cloneWithType();
@@ -138,6 +167,10 @@ public isolated function searchCodeSystem(r4:FHIRContext ctx) returns r4:Bundle|
     };
 }
 
+# Handles the `ConceptMap` search interaction, resolving the request's search parameters through the FHIR context and returning matches as a searchset `Bundle`.
+#
+# + ctx - The `FHIRContext` of the incoming search request
+# + return - A searchset `Bundle` of matching `ConceptMap` resources, or a `FHIRError` if the search parameters are invalid or the search fails
 public isolated function searchConceptMap(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
     map<r4:RequestSearchParameter[]>|error clonedParams = params.cloneWithType();
@@ -164,20 +197,10 @@ public isolated function searchConceptMap(r4:FHIRContext ctx) returns r4:Bundle|
     };
 }
 
-// ---------------------------------------------------------------------------
-// TEMPORARY SHIM (branch: api-conformance).
-// The terminology library (ballerinax/health.fhir.r4.terminology) only supports
-// the expansion parameters url, valueSetVersion, filter, _offset and _count, and
-// returns a hard error ("Invalid search parameter: ...") for anything else. The
-// HL7 tx-ecosystem test suite sends many additional parameters (excludeNested,
-// activeOnly, includeDesignations, displayLanguage, property, ...). To let the
-// suite run end-to-end and produce a real pass/fail report, this helper maps the
-// common aliases (count -> _count, offset -> _offset) and drops parameters the
-// server does not implement, so expansion returns a 2xx result instead of a 500.
-// Tests that depend on the dropped parameters will still fail on output comparison
-// (which is the honest, expected result) rather than failing the HTTP call.
-// Remove this shim once the parameters are natively supported.
-// ---------------------------------------------------------------------------
+# TEMPORARY SHIM (branch: api-conformance). Filters an expansion request's search parameters down to the set natively supported by the terminology library (url, valueSetVersion, filter, _offset, _count), mapping the common aliases count -> _count and offset -> _offset. The terminology library returns a hard error ("Invalid search parameter: ...") for anything else, but the HL7 tx-ecosystem test suite sends many additional parameters (excludeNested, activeOnly, includeDesignations, displayLanguage, property, ...). Dropping the unsupported ones here lets expansion return a 2xx result instead of a 500, so the suite can run end-to-end; tests that depend on the dropped parameters still fail on output comparison rather than failing the HTTP call. Remove this shim once the parameters are natively supported.
+#
+# + params - The full set of requested search parameters
+# + return - Only the parameters natively supported by the terminology library, with aliases normalized
 isolated function filterSupportedExpansionParams(map<r4:RequestSearchParameter[]> params) returns map<r4:RequestSearchParameter[]> {
     map<r4:RequestSearchParameter[]> supported = {};
     foreach var [key, value] in params.entries() {
@@ -199,7 +222,10 @@ isolated function filterSupportedExpansionParams(map<r4:RequestSearchParameter[]
     return supported;
 }
 
-// Extract the scalar value of a FHIR Parameters.parameter entry (value[x]) as a string.
+# Extracts the scalar value of a FHIR Parameters.parameter entry (value[x]) as a string.
+#
+# + paramItem - The JSON object for a single `Parameters.parameter` entry
+# + return - The stringified `value[x]`, or `()` if the entry has no scalar value
 isolated function extractBodyParamValue(map<json> paramItem) returns string? {
     foreach var [key, value] in paramItem.entries() {
         if key.startsWith("value") && (value is string || value is int || value is float || value is decimal || value is boolean) {
@@ -209,9 +235,12 @@ isolated function extractBodyParamValue(map<json> paramItem) returns string? {
     return ();
 }
 
-// Fills in the parts of an expansion the library leaves out: the system on each
-// entry, the abstract and inactive flags, an identifier, and the parameter echo.
-// Also drops inactive concepts when activeOnly or compose.inactive asks for it.
+# Fills in the parts of a `$expand` response the terminology library leaves out: the system on each entry, the abstract and inactive flags, an expansion identifier, and an echo of the request parameters used. Also drops inactive concepts when activeOnly or compose.inactive asks for it.
+#
+# + vs - The `ValueSet` returned by the expansion operation, to be enriched
+# + sourceVs - The original `ValueSet` (with its `compose`) the expansion was generated from, if known
+# + requestParams - The search parameters from the original expansion request
+# + return - The enriched `ValueSet`
 isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, map<r4:RequestSearchParameter[]> requestParams) returns r4:ValueSet {
     r4:ValueSet mutable = vs.clone();
     r4:ValueSetExpansion? expansion = mutable.expansion;
@@ -347,6 +376,11 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
     return mutable;
 }
 
+# Handles the `ValueSet/$expand` operation invoked via GET (query-parameter form). Resolves the target ValueSet either by `id` (instance-level call) or by the `url` query parameter (type-level call), expands it, and enriches the result via `postProcessExpansion`.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read the expansion query parameters
+# + id - The `ValueSet` id for an instance-level `$expand`, or `()` for a type-level call driven by the `url` parameter
+# + return - The expanded `ValueSet`, or a `FHIRError` if the ValueSet can't be resolved or expansion fails
 public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = ()) returns r4:ValueSet|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters = ctx.getRequestSearchParameters();
     map<r4:RequestSearchParameter[]> mutableParams = {};
@@ -376,6 +410,12 @@ public isolated function valueSetExpansionGet(r4:FHIRContext ctx, string? id = (
     return postProcessExpansion(valueSet, sourceVs, mutableParams);
 }
 
+# Handles the `ValueSet/$expand` operation invoked via POST (`Parameters` resource body). Unlike `valueSetExpansionGet`, this also accepts an inline `valueSet` parameter carrying a full `ValueSet` (with its own `compose`) to expand directly, in addition to resolving by `id` or the `url` parameter. Also folds any other scalar parameters in the body into the search-parameter map used for expansion and post-processing.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read any query parameters alongside the body
+# + parameters - The `$expand` request body, which may carry `url`, an inline `valueSet`, and other expansion parameters
+# + id - The `ValueSet` id for an instance-level `$expand`, or `()` for a type-level call driven by the body
+# + return - The expanded `ValueSet`, or a `FHIRError` if the ValueSet can't be resolved or expansion fails
 public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters parameters, string? id = ()) returns r4:ValueSet|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters = ctx.getRequestSearchParameters();
     map<r4:RequestSearchParameter[]> mutableParams = {};
@@ -438,16 +478,31 @@ public isolated function valueSetExpansionPost(r4:FHIRContext ctx, r4:Parameters
 
 }
 
+# Handles `ValueSet/$validate-code` invoked via POST (`Parameters` resource body), by delegating the lookup to `valueSetLookUpPost` and converting the result into a standard `result`/`message`/`display` validation `Parameters` response.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + parameters - The `$validate-code` request body
+# + return - A `Parameters` resource describing whether the code is valid in the ValueSet, or a `FHIRError` if the request itself is invalid
 public isolated function valueSetValidateCodePost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     r4:Parameters|r4:FHIRError concept = valueSetLookUpPost(ctx, parameters);
     return validationResultToParameters(concept);
 }
 
+# Handles `ValueSet/$validate-code` invoked via GET (query-parameter form), by delegating the lookup to `valueSetLookUpGet` and converting the result into a standard `result`/`message`/`display` validation `Parameters` response.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + id - The `ValueSet` id for an instance-level call, or `()` for a type-level call driven by query parameters
+# + return - A `Parameters` resource describing whether the code is valid in the ValueSet, or a `FHIRError` if the request itself is invalid
 public isolated function valueSetValidateCodeGet(r4:FHIRContext ctx, string? id = ()) returns r4:Parameters|r4:FHIRError {
     r4:Parameters|r4:FHIRError concept = valueSetLookUpGet(ctx, id);
     return validationResultToParameters(concept);
 }
 
+# Handles `CodeSystem/$lookup` invoked via GET (query-parameter form). Resolves the target CodeSystem either by `id` (instance-level call) or by the `system` query parameter (type-level call), looks up the `code`/`version` pair, and enriches the result with parent/child concepts and attribute relationships.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read the `system`, `code`, and `version` query parameters
+# + id - The `CodeSystem` id for an instance-level `$lookup`, or `()` for a type-level call driven by the `system` parameter
+# + return - A `Parameters` resource describing the looked-up concept, or a `FHIRError` if the code or CodeSystem can't be resolved
 public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()) returns r4:Parameters|r4:FHIRError {
 
     map<r4:RequestSearchParameter[] & readonly> & readonly idParam = ctx.getRequestSearchParameters();
@@ -500,6 +555,11 @@ public isolated function codeSystemLookUpGet(r4:FHIRContext ctx, string? id = ()
     return codesystemConceptsToParameters(result, cs, parentConcepts, childConcepts, attributeRelationships);
 }
 
+# Handles `CodeSystem/$lookup` invoked via POST (`Parameters` resource body). Accepts either a `coding` parameter or separate `system`/`code`/`version` parameters, looks up the concept, and enriches the result with parent/child concepts and attribute relationships.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + parameters - The `$lookup` request body, carrying either a `coding` or `system`+`code`(+`version`)
+# + return - A `Parameters` resource describing the looked-up concept, or a `FHIRError` if the code or CodeSystem can't be resolved
 public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     r4:Coding? codingValue = ();
     r4:uri? system = ();
@@ -580,9 +640,10 @@ public isolated function codeSystemLookUpPost(r4:FHIRContext ctx, r4:Parameters 
     return codesystemConceptsToParameters(result, cs, parentConcepts, childConcepts, attributeRelationships);
 }
 
-// True if codeValue is a Coding with no system, or a CodeableConcept
-// containing at least one Coding with no system - either shape reaches the
-// same unguarded cast inside the library's valueSetLookUp.
+# Checks whether codeValue is a Coding with no system, or a CodeableConcept containing at least one Coding with no system - either shape reaches the same unguarded cast inside the library's valueSetLookUp.
+#
+# + codeValue - The `Coding` or `CodeableConcept` to check
+# + return - True if a system is missing from `codeValue` (or from any of its codings)
 isolated function hasCodingWithoutSystem(r4:Coding|r4:CodeableConcept codeValue) returns boolean {
     if codeValue is r4:Coding {
         return codeValue.system is ();
@@ -596,14 +657,11 @@ isolated function hasCodingWithoutSystem(r4:Coding|r4:CodeableConcept codeValue)
     return false;
 }
 
-// terminology:valueSetLookUp discards the ValueSet resource it's given beyond
-// vs.url/vs.version - it re-resolves that url from storage rather than
-// evaluating the compose actually supplied. An inline "valueSet" param sent in
-// a $validate-code request is (by definition) usually not separately
-// persisted, so that resolution fails even though the compose is already in
-// hand. terminology:valueSetExpansion, unlike valueSetLookUp, does evaluate an
-// inline resource's compose directly (that's how $expand already handles inline
-// ValueSets correctly) - reuse it here and check membership in the result.
+# Looks up a coding against an inline ValueSet by expanding it and checking membership in the result. terminology:valueSetLookUp discards the ValueSet resource it's given beyond vs.url/vs.version - it re-resolves that url from storage rather than evaluating the compose actually supplied. An inline "valueSet" param sent in a $validate-code request is (by definition) usually not separately persisted, so that resolution fails even though the compose is already in hand. terminology:valueSetExpansion, unlike valueSetLookUp, does evaluate an inline resource's compose directly (that's how $expand already handles inline ValueSets correctly) - reuse it here and check membership in the result.
+#
+# + codeValue - The `Coding` or `CodeableConcept` to look up
+# + valueSet - The inline `ValueSet` (with its `compose`) to expand and check membership against
+# + return - The matching concept(s) if found, or a `FHIRError` if no coding matches an entry in the expansion
 isolated function lookupInInlineValueSet(r4:Coding|r4:CodeableConcept codeValue, r4:ValueSet valueSet) returns r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError {
     r4:ValueSet expanded = check terminology:valueSetExpansion({}, vs = valueSet, terminology = terminology_source);
     r4:ValueSetExpansionContains[] contains = expanded.expansion?.contains ?: [];
@@ -639,6 +697,11 @@ isolated function lookupInInlineValueSet(r4:Coding|r4:CodeableConcept codeValue,
     return matches.length() == 1 ? matches[0] : matches;
 }
 
+# Implements the code-in-ValueSet lookup behind `ValueSet/$validate-code` (POST form). Accepts a `coding` or `codeableConcept` (or `system`+`code`), matched against either an inline `valueSet` resource or a `ValueSet` resolved by `url`, and enriches the result with parent/child concepts and attribute relationships. Falls back to expanding an inline ValueSet's own `compose` (via `lookupInInlineValueSet`) when the library's own lookup can't resolve it by url.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + parameters - The request body, carrying the code to look up and the ValueSet to check it against
+# + return - A `Parameters` resource describing the matching concept(s), or a `FHIRError` if the inputs are invalid or no match is found
 public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     r4:Coding?|r4:CodeableConcept? codingValue = ();
     r4:ValueSet? valueSet = ();
@@ -774,6 +837,13 @@ public isolated function valueSetLookUpPost(r4:FHIRContext ctx, r4:Parameters pa
             httpStatusCode = http:STATUS_BAD_REQUEST);
 }
 
+# Implements the code-in-ValueSet lookup behind `ValueSet/$validate-code` (GET form). Resolves the target ValueSet by `id`, the `url` query parameter, or (as a legacy fallback) the `system` query parameter, then checks the given code for membership.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read the `url`/`system`/`code` query parameters
+# + id - The `ValueSet` id for an instance-level call, or `()` to resolve the ValueSet by `url`/`system` instead
+# + reqSystem - Fallback value for the code's system when not supplied as a `system` query parameter
+# + reqCodeValue - Fallback value for the code when not supplied as a `code` query parameter
+# + return - A `Parameters` resource describing the matching concept(s), or a `FHIRError` if the inputs are invalid or no match is found
 public isolated function valueSetLookUpGet(r4:FHIRContext ctx, string? id = (), string? reqSystem = (), string? reqCodeValue = ()) returns r4:Parameters|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParams = ctx.getRequestSearchParameters();
     // "url" is the spec-correct parameter for which ValueSet to validate against
@@ -815,6 +885,10 @@ public isolated function valueSetLookUpGet(r4:FHIRContext ctx, string? id = (), 
     return codesystemConceptsToParameters(result);
 }
 
+# Handles `CodeSystem/$subsumes` invoked via GET (query-parameter form): checks the subsumption relationship between `codeA` and `codeB` within the given `system`/`version`.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read the `system`, `version`, `codeA`, and `codeB` query parameters
+# + return - A `Parameters` resource carrying the subsumption `outcome`, or a `FHIRError` if any required parameter is missing
 public isolated function subsumesGet(r4:FHIRContext ctx) returns r4:Parameters|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly idParam = ctx.getRequestSearchParameters();
 
@@ -836,6 +910,11 @@ public isolated function subsumesGet(r4:FHIRContext ctx) returns r4:Parameters|r
     }
 }
 
+# Handles `CodeSystem/$subsumes` invoked via POST (`Parameters` resource body): checks the subsumption relationship between `codingA` and `codingB` within the given `system`/`version`.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + parameters - The request body, carrying `codingA`, `codingB`, `system`, and optionally `version`
+# + return - A `Parameters` resource carrying the subsumption `outcome`, or a `FHIRError` if any required parameter is missing
 public isolated function subsumesPost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     string? 'version = ();
     r4:uri? system = ();
@@ -883,10 +962,10 @@ public isolated function subsumesPost(r4:FHIRContext ctx, r4:Parameters paramete
     }
 }
 
-// terminology:translate() returns r4:OperationOutcome (not r4:FHIRError) on
-// failure, unlike the rest of this codebase's terminology:* calls. Bridges it
-// into an r4:FHIRError so the $translate handlers can use the same
-// check/error-propagation convention as every other operation here.
+# Converts an `OperationOutcome` into an `r4:FHIRError`. terminology:translate() returns r4:OperationOutcome (not r4:FHIRError) on failure, unlike the rest of this codebase's terminology:* calls; this bridges it into an r4:FHIRError so the $translate handlers can use the same check/error-propagation convention as every other operation here.
+#
+# + outcome - The `OperationOutcome` returned by a failed translate call
+# + return - An `r4:FHIRError` built from the first issue's details/diagnostics, or a generic message if none are present
 isolated function operationOutcomeToFHIRError(r4:OperationOutcome outcome) returns r4:FHIRError {
     string message = "Translation failed";
     r4:OperationOutcomeIssue[] issues = outcome.issue;
@@ -902,10 +981,12 @@ isolated function operationOutcomeToFHIRError(r4:OperationOutcome outcome) retur
     return r4:createFHIRError(message, r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
 }
 
-// Shared by translateGet/translatePost once source/target/codesToTranslate have
-// been extracted from the request. source is required because the underlying
-// library function (terminology:translate) takes it as a non-nilable r4:uri -
-// though the FHIR spec marks it merely "recommended," this server requires it.
+# Validates required inputs and performs the `$translate` operation, shared by translateGet/translatePost once source/target/codesToTranslate have been extracted from the request. source is required because the underlying library function (terminology:translate) takes it as a non-nilable r4:uri - though the FHIR spec marks it merely "recommended," this server requires it.
+#
+# + sourceValueSetUri - The source ValueSet canonical URL, required
+# + targetValueSetUri - The target ValueSet canonical URL, if known
+# + codesToTranslate - The coding(s) to translate, required
+# + return - The translation result `Parameters`, or a `FHIRError` if required inputs are missing or the translation fails
 isolated function performTranslate(r4:uri? sourceValueSetUri, r4:uri? targetValueSetUri, r4:CodeableConcept? codesToTranslate) returns r4:Parameters|r4:FHIRError {
     if sourceValueSetUri is () {
         return r4:createFHIRError(
@@ -931,6 +1012,10 @@ isolated function performTranslate(r4:uri? sourceValueSetUri, r4:uri? targetValu
     return operationOutcomeToFHIRError(<r4:OperationOutcome>result);
 }
 
+# Handles `ConceptMap/$translate` invoked via GET (query-parameter form). Reads `source`/`target`(or `targetsystem`)/`system`/`code`/`version`, plus the non-standard `sourceSystem`/`sourceCode`/`targetSystem` aliases the tx-ecosystem test suite also sends, and delegates to `performTranslate`.
+#
+# + ctx - The `FHIRContext` of the incoming request, used to read the translate query parameters
+# + return - The translation result `Parameters`, or a `FHIRError` if required inputs are missing or the translation fails
 public isolated function translateGet(r4:FHIRContext ctx) returns r4:Parameters|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly params = ctx.getRequestSearchParameters();
 
@@ -960,6 +1045,11 @@ public isolated function translateGet(r4:FHIRContext ctx) returns r4:Parameters|
     return performTranslate(sourceValueSetUri, targetValueSetUri, codesToTranslate);
 }
 
+# Handles `ConceptMap/$translate` invoked via POST (`Parameters` resource body). Accepts `source`/`target`(or `targetsystem`)/`system`/`code`/`version`, or a `coding`/`codeableConcept`, plus the non-standard `sourceSystem`/`sourceCode`/`targetSystem` aliases the tx-ecosystem test suite also sends, and delegates to `performTranslate`.
+#
+# + ctx - The `FHIRContext` of the incoming request
+# + parameters - The `$translate` request body
+# + return - The translation result `Parameters`, or a `FHIRError` if required inputs are missing or the translation fails
 public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters parameters) returns r4:Parameters|r4:FHIRError {
     r4:uri? sourceValueSetUri = ();
     r4:uri? targetValueSetUri = ();
@@ -1048,6 +1138,10 @@ public isolated function translatePost(r4:FHIRContext ctx, r4:Parameters paramet
     return performTranslate(sourceValueSetUri, targetValueSetUri, codesToTranslate);
 }
 
+# Processes a batch `Bundle` of `ValueSet/$validate-code`-style GET requests (each entry's `request.url` of the form `<base>?system=...&code=...`), validating each code against the ValueSet resolved from that system url, and returns a batch-response `Bundle` with one validation result per entry.
+#
+# + bundle - A `Bundle` whose type is "batch" and whose entries each request a code validation
+# + return - A `Bundle` of type "batch-response" with one validation-result entry per input entry, or a `FHIRError` if the bundle isn't a valid batch
 public isolated function batchValidateValueSets(r4:Bundle bundle) returns r4:Bundle|r4:FHIRError {
 
     if bundle.'type != r4:BUNDLE_TYPE_BATCH {
@@ -1123,6 +1217,10 @@ public isolated function batchValidateValueSets(r4:Bundle bundle) returns r4:Bun
     };
 }
 
+# Parses the `system` and `code` query parameters out of a bundle entry request URL of the form `<base>?system=...&code=...`.
+#
+# + input - The request URL to parse
+# + return - A map with `system` and `code` entries when both are present in the query string, or an empty map if the URL has no query string
 isolated function getSystemAndCode(string input) returns map<string> {
     // Split the string at '?' to separate the base URL and query parameters
     string[] parts = regex:split(input, string `\?`);
@@ -1154,6 +1252,11 @@ isolated function getSystemAndCode(string input) returns map<string> {
     return {"system": system, "code": code};
 }
 
+# Validates and persists a new `CodeSystem`. Re-implements `terminology:addCodeSystem`'s url-check/validate/duplicate-check flow directly (rather than calling it) because that library function hard-rejects a `CodeSystem` with no version, while FHIR itself allows an unversioned `CodeSystem`.
+#
+# + ctx - The `FHIRContext` of the incoming create request
+# + codeSystem - The `CodeSystem` to add
+# + return - An `r4:FHIRError` if the `CodeSystem` has no url, fails validation, or already exists, `()` otherwise
 public isolated function addCodeSystem(r4:FHIRContext ctx, r4:CodeSystem codeSystem) returns r4:FHIRError? {
     do {
         // Not using terminology:addCodeSystem directly: it hard-rejects a CodeSystem
@@ -1203,6 +1306,11 @@ public isolated function addCodeSystem(r4:FHIRContext ctx, r4:CodeSystem codeSys
     }
 }
 
+# Validates and persists a new `ValueSet`. Re-implements `terminology:addValueSet`'s url-check/validate/duplicate-check flow directly (rather than calling it) because that library function hard-rejects a `ValueSet` with no version, while FHIR itself allows an unversioned `ValueSet`.
+#
+# + ctx - The `FHIRContext` of the incoming create request
+# + valueSet - The `ValueSet` to add
+# + return - An `r4:FHIRError` if the `ValueSet` has no url, fails validation, or already exists, `()` otherwise
 public isolated function addValueSet(r4:FHIRContext ctx, r4:ValueSet valueSet) returns r4:FHIRError? {
     do {
         // Not using terminology:addValueSet directly: it hard-rejects a ValueSet
@@ -1252,6 +1360,11 @@ public isolated function addValueSet(r4:FHIRContext ctx, r4:ValueSet valueSet) r
     }
 }
 
+# Validates and persists a new `ConceptMap`. Round-trips the incoming resource through JSON before delegating to `terminology:addConceptMap`, because `ConceptMap` isn't a resource type the Terminology IG registers - the listener binds it against the default IG instead, producing a structurally identical but nominally different type that would otherwise trip up the library's internal `validator:validate(..., r4:ConceptMap)` call.
+#
+# + ctx - The `FHIRContext` of the incoming create request
+# + conceptMap - The `ConceptMap` to add
+# + return - An `r4:FHIRError` if the payload can't be normalized or the add fails, `()` otherwise
 public isolated function addConceptMap(r4:FHIRContext ctx, r4:ConceptMap conceptMap) returns r4:FHIRError? {
     do {
         // Like byteToConceptMap in data_mapping.bal: ConceptMap isn't a resource
@@ -1273,6 +1386,10 @@ public isolated function addConceptMap(r4:FHIRContext ctx, r4:ConceptMap concept
     }
 }
 
+# Handles bulk upload of terminology content from a zip file, dispatched by the mandatory `${TYPE_HEADER}` header. FHIR content is loaded as raw CodeSystem/ValueSet JSON; LOINC content is converted to FHIR then added as a single `CodeSystem`; SNOMED content is imported asynchronously in the background (this call returns immediately with `()` while the import runs and logs its own completion).
+#
+# + payload - The incoming zip-file request, with the terminology type indicated by the `${TYPE_HEADER}` header
+# + return - An `r4:FHIRError` if the payload is missing, has an unsupported content type/header, or fails to process, `()` otherwise
 public isolated function upload(http:Request payload) returns r4:FHIRError? {
     if payload.getContentType() != ZIP {
         return r4:createFHIRError(
@@ -1349,6 +1466,10 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
     }
 }
 
+# Handles the custom `$find-code` operation invoked via GET (query-parameter form): searches concepts across (optionally) a given `system` by matching `filter` text against either the `display` or `definition` property, paginated by `_count`/`_offset`.
+#
+# + request - The incoming HTTP request, read for the `property`, `system`, `filter`, `_count`, and `_offset` query parameters
+# + return - A search-result `Bundle` of matching concepts, or a `FHIRError` if `filter` is missing, `property` is invalid, or the search fails
 public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:FHIRError {
     string property = request.getQueryParamValue("property") ?: DISPLAY;
     string? system = request.getQueryParamValue("system");
@@ -1388,13 +1509,10 @@ public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:
     return codeSystemDetailsIntoBundle(result);
 }
 
-// Implements ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html):
-// maintains a client-named, incrementally-growing subsumption closure table.
-// Each call adds the given concepts to the named table and returns only the
-// subsumption pairs not yet reported for that name - both a new concept's own
-// ancestors (via concept_closure, the same table $subsumes/$lookup already
-// use), and any case where the new concept turns out to be an ancestor of a
-// concept added in an earlier call.
+# Implements `ConceptMap/$closure` (https://hl7.org/fhir/R4/conceptmap-operation-closure.html): maintains a client-named, incrementally-growing subsumption closure table. Each call adds the given `concept`s to the named table and returns only the subsumption pairs not yet reported for that name - both a new concept's own ancestors (via concept_closure, the same table `$subsumes`/`$lookup` already use), and any case where the new concept turns out to be an ancestor of a concept added in an earlier call. An optional `version` parameter also resyncs everything reported since that version.
+#
+# + request - The incoming HTTP request, whose JSON body is a `Parameters` resource carrying `name`, zero or more `concept` codings, and an optional `version` to resync from
+# + return - A `ConceptMap` encoding the newly discovered (and, on resync, historical) subsumption pairs plus any unmatched concepts, or a `FHIRError` if the payload is invalid or `name` is missing
 public isolated function closurePost(http:Request request) returns r4:ConceptMap|r4:FHIRError {
     json|http:ClientError jsonPayload = request.getJsonPayload();
     if jsonPayload is http:ClientError {
@@ -1523,6 +1641,10 @@ public isolated function closurePost(http:Request request) returns r4:ConceptMap
     return check buildClosureConceptMap(closureName, newVersion, pairsToReturn, unmatched);
 }
 
+# Handles the custom `$find-code` operation invoked via POST (`Parameters` resource body): searches concepts across (optionally) a given `system` by matching a `filter` text parameter against either the `display` or `definition` property, paginated by `_count`/`_offset`.
+#
+# + request - The incoming HTTP request, whose JSON body is a `Parameters` resource carrying `property`, `system`, `filter`, `_count`, and `_offset`
+# + return - A search-result `Bundle` of matching concepts, or a `FHIRError` if the payload is invalid, `filter` is missing, or `property` is invalid
 public isolated function findCodePost(http:Request request) returns r4:Bundle|r4:FHIRError {
     string property = DISPLAY;
     string? system = ();

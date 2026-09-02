@@ -32,11 +32,10 @@ const string RF2_RELATIONSHIP_PREFIX = "sct2_Relationship_Snapshot_";
 // SNOMED "is a" attribute typeId. Every taxonomic parent link uses this.
 public const string SNOMED_IS_A_TYPE_ID = "116680003";
 
-// Builds a child -> parents map from the Relationship file, keeping only active
-// is-a rows. A concept can have several parents, so values are arrays. Also
-// collects active non-is-a rows (clinical attributes) as a side channel in the
-// same pass, since the Relationship file can be large and re-reading it just
-// for attributes would double the I/O.
+# Builds a child -> parents map from the Relationship file, keeping only active is-a rows. A concept can have several parents, so values are arrays. Also collects active non-is-a rows (clinical attributes) as a side channel in the same pass, since the Relationship file can be large and re-reading it just for attributes would double the I/O.
+#
+# + filePath - The path to the RF2 Relationship file
+# + return - A tuple of the child concept ID -> parent concept ID array map, the active non-is-a attribute relationships, and the number of data rows read, or an `error` if the file could not be read
 public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<string[]>, SnomedAttributeRelationship[], int]|error {
     map<string[]> parentsByChild = {};
     SnomedAttributeRelationship[] attributeRelationships = [];
@@ -74,9 +73,11 @@ public isolated function streamSnomedIsaAdjacency(string filePath) returns [map<
     return [parentsByChild, attributeRelationships, rowsRead];
 }
 
-// Returns every ancestor of a concept with its shortest distance. Walks the
-// tree level by level, so an ancestor reachable by two paths gets the shorter
-// depth. Excludes the concept itself.
+# Returns every ancestor of a concept with its shortest distance. Walks the tree level by level, so an ancestor reachable by two paths gets the shorter depth. Excludes the concept itself.
+#
+# + code - The concept code whose ancestors are computed
+# + parentsByChild - The child concept ID -> parent concept ID array map to walk
+# + return - A map of ancestor concept ID to its shortest depth from `code`
 public isolated function computeAncestorDepths(string code, map<string[]> parentsByChild) returns map<int> {
     map<int> ancestorDepths = {};
 
@@ -111,10 +112,10 @@ type ConceptDescriptions record {|
     string? caseSignificanceId;
 |};
 
-// Groups descriptions by concept, splitting them into the fully specified
-// name, the active synonyms, and the inactive (historical) synonyms. FSN is
-// only tracked from active rows - inactive FSNs are rare and dropping them
-// keeps the "first active FSN wins" rule simple.
+# Streams the Description file and groups descriptions by concept, splitting them into the fully specified name (FSN), active synonyms, and inactive (historical) synonyms. FSN is only tracked from active rows - inactive FSNs are rare and dropping them keeps the "first active FSN wins" rule simple.
+#
+# + filePath - The path to the RF2 Description file
+# + return - A tuple of the concept ID -> `ConceptDescriptions` index and the number of data rows read, or an `error` if the file could not be read
 isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDescriptions>, int]|error {
     map<ConceptDescriptions> index = {};
     int rowsRead = 0;
@@ -165,6 +166,10 @@ isolated function streamDescriptionIndex(string filePath) returns [map<ConceptDe
     return [index, rowsRead];
 }
 
+# Streams the Text Definition file and builds a concept ID -> definition text index, keeping only the first active definition per concept.
+#
+# + filePath - The path to the RF2 Text Definition file
+# + return - A tuple of the concept ID -> definition index and the number of data rows read, or an `error` if the file could not be read
 isolated function streamTextDefinitionIndex(string filePath) returns [map<string>, int]|error {
     map<string> index = {};
     int rowsRead = 0;
@@ -197,11 +202,12 @@ isolated function streamTextDefinitionIndex(string filePath) returns [map<string
     return [index, rowsRead];
 }
 
-// Reads the Concept file and joins each row against the description and text
-// definition indexes. Display falls back from synonym to FSN to the code.
-// definition is left absent unless the concept has a real text definition —
-// the FSN is a display label, not a clinical definition, and is already
-// carried separately as a designation.
+# Reads the Concept file and joins each row against the description and text definition indexes to build the full set of concept imports, both active and inactive. Display falls back from synonym to FSN to the code, while `definition` is left absent unless the concept has a real text definition - the FSN is a display label, not a clinical definition, and is already carried separately as a designation.
+#
+# + filePath - The path to the RF2 Concept file
+# + descIndex - The concept ID -> `ConceptDescriptions` index built from the Description file
+# + defIndex - The concept ID -> definition text index built from the Text Definition file
+# + return - A tuple of the built `SnomedConceptImport` array and the number of data rows read, or an `error` if the file could not be read
 isolated function streamConceptImports(string filePath, map<ConceptDescriptions> descIndex, map<string> defIndex) returns [SnomedConceptImport[], int]|error {
     SnomedConceptImport[] result = [];
     int rowsRead = 0;
@@ -252,11 +258,18 @@ isolated function streamConceptImports(string filePath, map<ConceptDescriptions>
     return [result, rowsRead];
 }
 
+# Checks whether an RF2 line is the file's header row.
+#
+# + line - The line to check
+# + return - true if the line starts with the "id" column header
 isolated function isHeaderLine(string line) returns boolean {
     return line.startsWith("id\t");
 }
 
-// Trims a value to fit the varchar limit on the concepts table columns.
+# Trims a value to fit the varchar limit on the concepts table columns.
+#
+# + value - The value to trim, or `()`
+# + return - `value` truncated to the column limit, `()` if `value` is `()`
 public isolated function truncate191(string? value) returns string? {
     if value is () {
         return ();
@@ -267,7 +280,10 @@ public isolated function truncate191(string? value) returns string? {
     return value.substring(0, DB_STRING_COLUMN_LIMIT);
 }
 
-// Converts an RF2 version stamp (YYYYMMDD) into a FHIR date (YYYY-MM-DD).
+# Converts an RF2 version stamp (YYYYMMDD) into a FHIR date (YYYY-MM-DD).
+#
+# + version - The RF2 version stamp, or `()`
+# + return - The converted FHIR date, or an empty string if `version` is `()` or not 8 characters long
 public isolated function deriveSnomedDate(string? version) returns string {
     if version is () || version.length() != 8 {
         return "";
@@ -275,6 +291,11 @@ public isolated function deriveSnomedDate(string? version) returns string {
     return version.substring(0, 4) + "-" + version.substring(4, 6) + "-" + version.substring(6, 8);
 }
 
+# Finds the RF2 file with the given name prefix under a directory, searching recursively.
+#
+# + dirPath - The directory to search under
+# + prefix - The file name prefix to look for (e.g. an RF2 snapshot file prefix)
+# + return - The absolute path of the matching file, or an `error` if none was found or a directory could not be read
 public isolated function findRf2File(string dirPath, string prefix) returns string|error {
     string? found = check searchRf2File(dirPath, prefix);
     if found is string {
@@ -283,8 +304,11 @@ public isolated function findRf2File(string dirPath, string prefix) returns stri
     return error(string `RF2 file with prefix '${prefix}' not found under ${dirPath}`);
 }
 
-// Looks for the file in the given directory first, then recurses into any
-// subdirectories, since RF2 releases nest their files differently.
+# Looks for a file whose name starts with the given prefix and ends with ".txt" in the given directory, checking immediate entries before recursing into subdirectories, since RF2 releases nest their files differently.
+#
+# + dirPath - The directory to search under
+# + prefix - The file name prefix to look for (e.g. an RF2 snapshot file prefix)
+# + return - The absolute path of the matching file, `()` if none was found, or an `error` if a directory could not be read
 isolated function searchRf2File(string dirPath, string prefix) returns string?|error {
     boolean exists = check file:test(dirPath, file:EXISTS);
     if !exists {
@@ -308,12 +332,19 @@ isolated function searchRf2File(string dirPath, string prefix) returns string?|e
     return ();
 }
 
+# Returns the final path segment (file or directory name) of the given path, splitting on either forward or backward slashes.
+#
+# + path - The file or directory path
+# + return - The last segment of the path
 isolated function getBaseName(string path) returns string {
     string[] parts = regex:split(path, "[\\\\/]");
     return parts[parts.length() - 1];
 }
 
-// Build the SNOMED CodeSystem metadata resource
+# Builds the SNOMED CodeSystem metadata resource, stamped with the given version and its derived FHIR date.
+#
+# + version - The SNOMED release version, or `()` to leave the version unset
+# + return - The built `r4:CodeSystem` metadata resource
 public isolated function buildSnomedCodeSystemMetadata(string? version) returns r4:CodeSystem {
     string effectiveVersion = version ?: "";
     r4:CodeSystem codeSystem = {
@@ -335,7 +366,10 @@ public isolated function buildSnomedCodeSystemMetadata(string? version) returns 
     return codeSystem;
 }
 
-// Convert a single SnomedConceptImport into a full-fidelity r4:CodeSystemConcept.
+# Converts a single `SnomedConceptImport` into a full-fidelity `r4:CodeSystemConcept`, projecting its FSN and synonyms (active and inactive) into designations and its core RF2 fields into properties.
+#
+# + item - The parsed SNOMED concept import record to convert
+# + return - The built `r4:CodeSystemConcept`
 public isolated function snomedConceptImportToR4(SnomedConceptImport item) returns r4:CodeSystemConcept {
     r4:CodeSystemConceptDesignation[] designations = [];
 

@@ -32,18 +32,26 @@ type ConceptMapRow record {|
     byte[] conceptMap;
 |};
 
-// ConceptMap.source[x] and target[x] are choice types (uri or canonical) -
-// either can carry the ValueSet scope findConceptMaps searches by.
+# Resolves the source ValueSet URI of a ConceptMap, since `source[x]` is a choice type (uri or canonical) - either can carry the scope findConceptMaps searches by.
+#
+# + cm - The ConceptMap to inspect
+# + return - The source URI or canonical value, or `()` if neither is set
 isolated function conceptMapSourceUri(r4:ConceptMap cm) returns string? {
     return cm.sourceUri ?: cm.sourceCanonical;
 }
 
+# Resolves the target ValueSet URI of a ConceptMap, since `target[x]` is a choice type (uri or canonical) - either can carry the scope findConceptMaps searches by.
+#
+# + cm - The ConceptMap to inspect
+# + return - The target URI or canonical value, or `()` if neither is set
 isolated function conceptMapTargetUri(r4:ConceptMap cm) returns string? {
     return cm.targetUri ?: cm.targetCanonical;
 }
 
-// Backs TerminologySource.addConceptMap. Mirrors addCodeSystem/addValueSet's
-// shape - stores the full resource as a blob plus queryable columns.
+# Persists a ConceptMap to the store, backing `TerminologySource.addConceptMap`. Mirrors the storage shape used by addCodeSystem/addValueSet, saving the full resource as a blob plus queryable columns.
+#
+# + conceptMap - The ConceptMap to store
+# + return - An `r4:FHIRError` if serialization or the insert fails, `()` otherwise
 isolated function storeConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError? {
     byte[]|r4:FHIRError bytes = conceptMapToByte(conceptMap);
     if bytes is r4:FHIRError {
@@ -69,9 +77,11 @@ isolated function storeConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError
     }
 }
 
-// Backs TerminologySource.findConceptMaps: the terminology library's translate()
-// calls this to find candidate ConceptMaps for a given source (and optionally
-// target) ValueSet scope, then does the actual code matching itself.
+# Finds candidate ConceptMaps for a given source (and optionally target) ValueSet scope, backing `TerminologySource.findConceptMaps`. The terminology library's translate() uses this to narrow candidates before performing the actual code matching itself.
+#
+# + sourceValueSetUri - The source ValueSet URI or canonical to match against
+# + targetValueSetUri - The target ValueSet URI or canonical to match against, or `()` to match on source alone
+# + return - The matching ConceptMaps, or an `r4:FHIRError` if the query fails
 isolated function findStoredConceptMaps(r4:uri sourceValueSetUri, r4:uri? targetValueSetUri) returns r4:ConceptMap[]|r4:FHIRError {
     sql:ParameterizedQuery query;
     if targetValueSetUri is r4:uri {
@@ -87,8 +97,11 @@ isolated function findStoredConceptMaps(r4:uri sourceValueSetUri, r4:uri? target
     return queryStoredConceptMaps(query);
 }
 
-// Backs TerminologySource.getConceptMap: direct lookup by canonical url (+
-// optional version).
+# Looks up a single ConceptMap by its canonical URL and optional version, backing `TerminologySource.getConceptMap`.
+#
+# + url - The canonical URL of the ConceptMap
+# + conceptMapVersion - The specific version to match, or `()` to match by URL alone
+# + return - The matching ConceptMap, or an `r4:FHIRError` if none is found or the query fails
 isolated function getStoredConceptMapByUrl(r4:uri url, string? conceptMapVersion) returns r4:ConceptMap|r4:FHIRError {
     sql:ParameterizedQuery query;
     if conceptMapVersion is string {
@@ -114,7 +127,11 @@ isolated function getStoredConceptMapByUrl(r4:uri url, string? conceptMapVersion
     return results[0];
 }
 
-// Backs TerminologySource.isConceptMapExist.
+# Checks whether a ConceptMap with the given URL and version is already stored, backing `TerminologySource.isConceptMapExist`.
+#
+# + url - The canonical URL of the ConceptMap
+# + conceptMapVersion - The version to match
+# + return - `true` if a matching ConceptMap exists, `false` otherwise
 isolated function storedConceptMapExists(r4:uri url, string conceptMapVersion) returns boolean {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT 1 FROM `, escapeToQuery("conceptmaps"),
@@ -125,8 +142,12 @@ isolated function storedConceptMapExists(r4:uri url, string conceptMapVersion) r
     return rows is error ? false : rows.length() > 0;
 }
 
-// Backs TerminologySource.searchConceptMap. Supports the common search
-// parameters (_id, url, name, status); returns everything if none are given.
+# Searches stored ConceptMaps by the common search parameters (_id, url, name, status), backing `TerminologySource.searchConceptMap`. Returns every stored ConceptMap when none of the parameters are given.
+#
+# + params - The request search parameters, keyed by parameter name
+# + offset - The number of matching rows to skip, or `()` for no offset
+# + count - The maximum number of rows to return, or `()` for no limit
+# + return - The matching ConceptMaps, or an `r4:FHIRError` if the query fails
 isolated function searchStoredConceptMaps(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:ConceptMap[]|r4:FHIRError {
     sql:ParameterizedQuery[] conditions = [];
 
@@ -167,9 +188,10 @@ isolated function searchStoredConceptMaps(map<r4:RequestSearchParameter[]> param
     return queryStoredConceptMaps(query);
 }
 
-// Shared by all the lookup/search functions above: runs the query, decodes each
-// row's stored blob back into a ConceptMap, and silently skips any row that
-// fails to decode rather than failing the whole call.
+# Runs a query against the conceptmaps table and decodes each row's stored blob back into a ConceptMap. Shared by all the lookup/search functions above. A row that fails to decode is silently skipped rather than failing the whole call.
+#
+# + query - The parameterized SQL query to run against the conceptmaps table
+# + return - The decoded ConceptMaps, or an `r4:FHIRError` if the query itself fails
 isolated function queryStoredConceptMaps(sql:ParameterizedQuery query) returns r4:ConceptMap[]|r4:FHIRError {
     stream<ConceptMapRow, persist:Error?> resultStream = sClient->queryNativeSQL(query);
     ConceptMapRow[]|error rows = from ConceptMapRow row in resultStream

@@ -15,7 +15,11 @@
 // under the License.
 import ballerina/file;
 
-// Function to read an RF2 Snapshot release directory and produce the inputs the DB layer needs to import SNOMED CT
+# Reads an RF2 Snapshot release directory and produces the inputs the DB layer needs to import SNOMED CT. Locates the Concept, Description, Relationship, and (if present) Text Definition files by prefix, streams and joins them into concept import records, and builds the is-a parent adjacency and attribute relationships from the Relationship file.
+#
+# + dirPath - The base directory of the extracted RF2 Snapshot release
+# + version - The SNOMED release version to stamp on the CodeSystem metadata, or `()` to leave it unset
+# + return - The assembled `SnomedImportBundle`, or an `error` if a required RF2 file is missing or cannot be read
 public isolated function buildSnomedImport(string dirPath, string? version) returns SnomedImportBundle|error {
     string conceptFilePath = check findRf2File(dirPath, RF2_CONCEPT_PREFIX);
     string descriptionFilePath = check findRf2File(dirPath, RF2_DESCRIPTION_PREFIX);

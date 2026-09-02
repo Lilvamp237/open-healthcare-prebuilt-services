@@ -17,13 +17,22 @@ import ballerina/file;
 import ballerina/io;
 import ballerinax/health.fhir.r4;
 
-// Function to read the LOINC CSV file
+# Reads the LOINC concept table CSV file into an array of `LoincConcept` records.
+#
+# + path - The file path of the LOINC CSV file to read
+# + return - The parsed LOINC concepts, or an `error` if the file could not be read or parsed
 isolated function readLoincCsv(string path) returns LoincConcept[]|error {
     LoincConcept[]|io:Error content = io:fileReadCsv(path);
     return content;
 }
 
-// Function to export the combined CodeSystem resource to a JSON file
+# Builds the combined LOINC `CodeSystem` FHIR resource and writes it as JSON to the given file path.
+#
+# + concepts - The LOINC concepts to include in the `CodeSystem`
+# + partIndex - LoincNumber -> {axis: LoincPartRef} index used to resolve LP-code properties
+# + 'version - The CodeSystem version to set, or `()` to leave it unset
+# + jsonFilePath - The file path to write the resulting `CodeSystem` JSON to
+# + return - An `error` if the CodeSystem could not be built or the file could not be written, `()` otherwise
 isolated function exportCodeSystem(LoincConcept[] concepts, map<map<LoincPartRef>> partIndex, string? 'version, string jsonFilePath) returns error? {
     r4:CodeSystem codeSystem;
     codeSystem = check createCodeSystemResource(concepts, partIndex, 'version);
@@ -31,6 +40,11 @@ isolated function exportCodeSystem(LoincConcept[] concepts, map<map<LoincPartRef
     check io:fileWriteString(jsonFilePath, codeSystem.toJson().toJsonString());
 }
 
+# Converts a LOINC release directory into a combined `CodeSystem` JSON file. Locates the LoincTable and (optionally) PartFile directories under the given path by name, reads the concept table, builds an LP-code part index when the Part File is present, and writes the resulting `CodeSystem` alongside the input.
+#
+# + filePath - The base directory of the extracted LOINC release
+# + version - The CodeSystem version to set, or `()` to leave it unset
+# + return - An `error` if the LoincTable directory is missing or conversion fails, `()` otherwise
 public isolated function convert(string filePath, string? version) returns error? {
     // LoincTable/ and AccessoryFiles/PartFile/ may be at the zip root, or wrapped
     // in the release folder LOINC ships them in (e.g. "Loinc_2.82/") - search for

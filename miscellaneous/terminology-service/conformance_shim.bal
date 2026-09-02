@@ -18,31 +18,13 @@ import ballerina/http;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.parser;
 
-// ---------------------------------------------------------------------------
-// TEMPORARY SHIM (branch: api-conformance).
-//
-// The fhirr4 listener validates every operation parameter against the standard
-// FHIR OperationDefinition and rejects any parameter that is not declared there
-// with HTTP 400 ("Unknown parameter ... for operation ...").
-//
-// The HL7 tx-ecosystem test runner (validator_cli txTests) attaches a "uuid"
-// correlation parameter to *every* $expand/$validate-code/$lookup/$subsumes
-// request (see parameters-default.json in the test package). Because "uuid" is
-// not part of the standard OperationDefinitions, the framework rejected every
-// test request with 400 before it ever reached the service handlers -- which is
-// why the whole suite failed on "Response Code fail: should be '2xx'".
-//
-// Attaching this pre-processor to an operation makes the framework hand parameter
-// handling to us instead of doing its strict built-in validation, so unknown
-// parameters (uuid, and any future correlation params) are tolerated:
-//   * GET  -> pass the raw query parameters through as operation search params.
-//   * POST -> parse the Parameters/Bundle payload and hand it back unchanged.
-// The service handlers (and filterSupportedExpansionParams) then take only the
-// parameters they actually understand.
-//
-// Remove this shim once the server natively tolerates unknown operation
-// parameters, or once the parameters are declared in the OperationDefinitions.
-// ---------------------------------------------------------------------------
+# Bypasses the framework's strict per-parameter validation for an operation, so parameters not declared in the standard FHIR OperationDefinition (e.g. the "uuid" correlation parameter the HL7 tx-ecosystem test runner attaches to every $expand/$validate-code/$lookup/$subsumes request) are tolerated instead of being rejected with HTTP 400. For a POST, parses the payload and hands it back unchanged; for a GET, passes the raw query parameters through as operation search params. The service handlers (and filterSupportedExpansionParams) then take only the parameters they actually understand. This is a temporary shim (branch: api-conformance) to be removed once the server natively tolerates unknown operation parameters, or once the parameters are declared in the OperationDefinitions.
+#
+# + definition - The FHIR OperationDefinition for the operation being invoked
+# + resourceType - The resource type the operation is invoked on
+# + requestQueryParams - The raw GET query parameters, or `()` when the request is a POST
+# + payload - The parsed POST body (Parameters or Bundle), or `()` when the request is a GET
+# + return - The resolved search parameters or resource entity to hand to the operation, an `r4:FHIRError` if a POST payload is invalid, or `()`
 isolated function lenientOperationPreProcessor(r4:FHIROperationDefinition definition, string resourceType,
         map<string[]?>? requestQueryParams, json|xml? payload)
         returns map<r4:RequestSearchParameter[]>|r4:FHIRResourceEntity|r4:FHIRError? {

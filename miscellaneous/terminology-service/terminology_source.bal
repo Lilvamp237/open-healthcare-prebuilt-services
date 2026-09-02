@@ -33,6 +33,9 @@ import ballerinax/persist.sql as psql;
 // Improve after the issue https://github.com/wso2/open-healthcare-prebuilt-services/issues/151 is fixed
 final store_pg:Client sClient = check initializeClient();
 
+# Creates and initializes the database client for the configured backend.
+#
+# + return - The initialized `store_pg:Client` or `store_h2:Client`, or an `error` if `db_type` is unsupported
 function initializeClient() returns store_pg:Client|store_h2:Client|error {
     if db_type == "postgresql" {
         log:printInfo("Initializing PostgreSQL client for terminology service");
@@ -49,6 +52,10 @@ function initializeClient() returns store_pg:Client|store_h2:Client|error {
 public isolated class TerminologySource {
     *terminology:Terminology;
 
+    # Persists a `CodeSystem` resource and its concepts to the database.
+    #
+    # + codeSystem - The `CodeSystem` to add
+    # + return - An `r4:FHIRError` if the insert fails, `()` otherwise
     public isolated function addCodeSystem(r4:CodeSystem codeSystem) returns r4:FHIRError? {
         // add the code system to the database
         store_h2:CodeSystemInsert dbCodeSystemInsert = {
@@ -77,6 +84,10 @@ public isolated class TerminologySource {
         extractConceptsFromCodeSystem(codeSystem, response[0]);
     }
 
+    # Persists a `ValueSet` resource and its concepts to the database.
+    #
+    # + valueSet - The `ValueSet` to add
+    # + return - An `r4:FHIRError` if the insert fails, `()` otherwise
     public isolated function addValueSet(r4:ValueSet valueSet) returns r4:FHIRError? {
         // add the value set to the database
         store_h2:ValueSetInsert dbValueSetInsert = {
@@ -105,6 +116,12 @@ public isolated class TerminologySource {
         extractConceptsFromValueSet(valueSet, response[0]);
     }
 
+    # Looks up a stored `CodeSystem` by its id or canonical url.
+    #
+    # + system - The canonical url of the `CodeSystem` to find, used when `id` is not given
+    # + id - The internal id of the `CodeSystem` to find, preferred over `system` when given
+    # + version - The `CodeSystem` version to match
+    # + return - The matching `r4:CodeSystem`, or an `r4:FHIRError` if neither `id` nor `system` is given or no match is found
     public isolated function findCodeSystem(r4:uri? system, string? id, string? version = ()) returns r4:CodeSystem|r4:FHIRError {
         r4:CodeSystem|r4:FHIRError|error? dbCodeSystem = ();
         if id != () {
@@ -130,6 +147,12 @@ public isolated class TerminologySource {
         return dbCodeSystem;
     }
 
+    # Finds a concept by system and code, checking stored ValueSets first and falling back to stored CodeSystems.
+    #
+    # + system - The canonical url of the system the concept belongs to
+    # + code - The code of the concept to find
+    # + version - The system version to match
+    # + return - The matching concept's details, or an `r4:FHIRError` if it isn't found in either a ValueSet or a CodeSystem
     public isolated function findConcept(r4:uri system, r4:code code, string? version) returns terminology:CodeConceptDetails|r4:FHIRError {
         // find the concept in the valueset table
         terminology:CodeConceptDetails|r4:FHIRError valuesetConceptDetails = findConceptInValueSet(system, code, version);
@@ -152,6 +175,12 @@ public isolated class TerminologySource {
                 httpStatusCode = http:STATUS_NOT_FOUND);
     }
 
+    # Looks up a stored `ValueSet` by its id or canonical url.
+    #
+    # + system - The canonical url of the `ValueSet` to find, used when `id` is not given
+    # + id - The internal id of the `ValueSet` to find, preferred over `system` when given
+    # + version - The `ValueSet` version to match
+    # + return - The matching `r4:ValueSet`, or an `r4:FHIRError` if neither `id` nor `system` is given or no match is found
     public isolated function findValueSet(r4:uri? system, string? id, string? version) returns r4:ValueSet|r4:FHIRError {
         r4:ValueSet|r4:FHIRError|error dbValueSet;
 
@@ -185,6 +214,11 @@ public isolated class TerminologySource {
         return dbValueSet;
     }
 
+    # Checks whether a `CodeSystem` with the given url and version is stored.
+    #
+    # + system - The canonical url of the `CodeSystem` to check
+    # + version - The version of the `CodeSystem` to check
+    # + return - `true` if a matching `CodeSystem` exists, `false` otherwise
     public isolated function isCodeSystemExist(r4:uri system, string version) returns boolean {
         // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
         // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -204,6 +238,11 @@ public isolated class TerminologySource {
         return results is error ? false : results.length() > 0;
     }
 
+    # Checks whether a `ValueSet` with the given url and version is stored.
+    #
+    # + system - The canonical url of the `ValueSet` to check
+    # + version - The version of the `ValueSet` to check
+    # + return - `true` if a matching `ValueSet` exists, `false` otherwise
     public isolated function isValueSetExist(r4:uri system, string version) returns boolean {
         // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
         // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -222,6 +261,12 @@ public isolated class TerminologySource {
         return results is error ? false : results.length() > 0;
     }
 
+    # Searches stored `CodeSystem`s matching the given FHIR search parameters, with optional pagination.
+    #
+    # + params - The search parameters to filter by, keyed by recognized parameter name
+    # + offset - The number of matching records to skip, applied only when `count` is also given
+    # + count - The maximum number of records to return, applied only when `offset` is also given
+    # + return - The matching `r4:CodeSystem`s, or an `r4:FHIRError` if the query or result parsing fails
     public isolated function searchCodeSystem(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:CodeSystem[]|r4:FHIRError {
         sql:ParameterizedQuery whereClause = ``;
         boolean isFirst = true;
@@ -272,6 +317,12 @@ public isolated class TerminologySource {
         return codeSystemArray;
     }
 
+    # Searches stored `ValueSet`s matching the given FHIR search parameters, with optional pagination. Returns every stored `ValueSet` when no search parameters are given.
+    #
+    # + params - The search parameters to filter by, keyed by recognized parameter name
+    # + offset - The number of matching records to skip, applied only when `count` is also given
+    # + count - The maximum number of records to return, applied only when `offset` is also given
+    # + return - The matching `r4:ValueSet`s, or an `r4:FHIRError` if the query or result parsing fails
     public isolated function searchValueSet(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:ValueSet[]|r4:FHIRError {
 
         stream<store_h2:ValueSet, persist:Error?> valueSetStream;
@@ -322,6 +373,13 @@ public isolated class TerminologySource {
         return valueSetArray;
     }
 
+    # Implements FHIR `$expand`, resolving a stored `ValueSet`'s `compose.include` rules into its member concepts. Handles explicit concept lists, whole-system includes, nested ValueSet includes (recursively expanded), and intensional filters (`concept is-a`/`descendent-of` via the closure table or, absent one, a parent-link walk; `=` and `regex` property filters), ANDing multiple filters on the same include and unioning across includes. Applies an optional text filter and paginates the combined result.
+    #
+    # + searchParameters - The request's search parameters; a `filter` parameter narrows results by display text
+    # + valueSet - The stored `ValueSet` to expand
+    # + offset - The number of matching concepts to skip
+    # + count - The maximum number of concepts to return
+    # + return - The `valueSet` with its `expansion` populated, or an `r4:FHIRError` if the `ValueSet` or its includes cannot be resolved
     public isolated function expandValueSet(map<r4:RequestSearchParameter[]> searchParameters, r4:ValueSet valueSet, int offset, int count) returns r4:ValueSet|r4:FHIRError {
         store_h2:ValueSet|error dbValueSet = getStoreValueSetByURL(valueSet.url.toString(), valueSet.version);
         if dbValueSet is error {
@@ -498,6 +556,13 @@ public isolated class TerminologySource {
         return valueSet;
     }
 
+    # Implements FHIR `$subsumes`, determining the subsumption relationship between two codes in the same `CodeSystem` via the closure table (falling back to a parent-chain walk).
+    #
+    # + system - The canonical url of the `CodeSystem` both codes belong to
+    # + codeA - The first code to compare
+    # + codeB - The second code to compare
+    # + version - The `CodeSystem` version to match
+    # + return - A `Parameters` resource with the subsumption outcome (`equivalent`, `subsumes`, `subsumed-by`, or `not-subsumed`), or an `r4:FHIRError` if the `CodeSystem` or either code is not found
     public isolated function subsumes(r4:uri system, r4:code codeA, r4:code codeB, string? version) returns r4:Parameters|r4:FHIRError {
         var codeSystem = getStoreCodeSystemByURL(system, version);
 
@@ -538,6 +603,14 @@ public isolated class TerminologySource {
         return {'parameter: [{name: terminology:OUTCOME, valueCode: terminology:NOT_SUBSUMED}]};
     }
 
+    # Searches stored concepts whose display or definition text matches a regex filter, optionally restricted to a system, with pagination.
+    #
+    # + property - Whether to match against the concept's display or definition text
+    # + filter - The regex fragment to match the property text against
+    # + system - The canonical url to restrict the search to, or `()` to search across all systems
+    # + offset - The number of matching concepts to skip
+    # + count - The maximum number of concepts to return
+    # + return - The matching concepts' details, or an `r4:FHIRError` if the query fails
     public isolated function searchConcept(DISPLAY|DEFINITION property, string filter, string? system, int offset, int count) returns terminology:CodeConceptDetails[]|r4:FHIRError {
         sql:ParameterizedQuery whereClause = sql:queryConcat(
                 escapeToQuery(property), getRegexOperator(), stringToParameterizedQuery("'.*" + filter + ".*'"),
@@ -575,29 +648,58 @@ public isolated class TerminologySource {
         return concepts;
     }
 
+    # Persists a `ConceptMap` resource to the database.
+    #
+    # + conceptMap - The `ConceptMap` to add
+    # + return - An `r4:FHIRError` if the insert fails, `()` otherwise
     public isolated function addConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError? {
         return storeConceptMap(conceptMap);
     }
 
+    # Finds stored `ConceptMap`s that map from the given source ValueSet, optionally restricted to a target ValueSet.
+    #
+    # + sourceValueSetUri - The canonical url of the source `ValueSet` to match
+    # + targetValueSetUri - The canonical url of the target `ValueSet` to match, or `()` to match any target
+    # + return - The matching `r4:ConceptMap`s, or an `r4:FHIRError` if the query fails
     public isolated function findConceptMaps(r4:uri sourceValueSetUri, r4:uri? targetValueSetUri) returns r4:ConceptMap[]|r4:FHIRError {
         return findStoredConceptMaps(sourceValueSetUri, targetValueSetUri);
     }
 
+    # Looks up a stored `ConceptMap` by its canonical url.
+    #
+    # + conceptMapUrl - The canonical url of the `ConceptMap` to find
+    # + version - The `ConceptMap` version to match
+    # + return - The matching `r4:ConceptMap`, or an `r4:FHIRError` if no match is found
     public isolated function getConceptMap(r4:uri conceptMapUrl, string? version) returns r4:ConceptMap|r4:FHIRError {
         return getStoredConceptMapByUrl(conceptMapUrl, version);
     }
 
+    # Checks whether a `ConceptMap` with the given url and version is stored.
+    #
+    # + system - The canonical url of the `ConceptMap` to check
+    # + version - The version of the `ConceptMap` to check
+    # + return - `true` if a matching `ConceptMap` exists, `false` otherwise
     public isolated function isConceptMapExist(r4:uri system, string version) returns boolean {
         return storedConceptMapExists(system, version);
     }
 
+    # Searches stored `ConceptMap`s matching the given FHIR search parameters, with optional pagination.
+    #
+    # + params - The search parameters to filter by, keyed by recognized parameter name
+    # + offset - The number of matching records to skip
+    # + count - The maximum number of records to return
+    # + return - The matching `r4:ConceptMap`s, or an `r4:FHIRError` if the query fails
     public isolated function searchConceptMap(map<r4:RequestSearchParameter[]> params, int? offset, int? count) returns r4:ConceptMap[]|r4:FHIRError {
         return searchStoredConceptMaps(params, offset, count);
     }
 }
 
-// Returns true if a closure row (ancestorConceptId, descendantConceptId) exists
-// for this CodeSystem
+# Checks whether a closure row exists for the given ancestor/descendant pair in this CodeSystem.
+#
+# + ancestorId - Internal concept id of the potential ancestor
+# + descendantId - Internal concept id of the potential descendant
+# + codeSystemId - Internal id of the CodeSystem the pair belongs to
+# + return - `true` if the pair exists in the closure table, `false` otherwise
 isolated function closureContainsPair(int ancestorId, int descendantId, int codeSystemId) returns boolean {
     sql:ParameterizedQuery sqlQuery = sql:queryConcat(
             `SELECT 1 FROM `, escapeToQuery("concept_closure"),
@@ -612,8 +714,13 @@ isolated function closureContainsPair(int ancestorId, int descendantId, int code
     return results is error ? false : results.length() > 0;
 }
 
-// Resolve an intensional `concept is-a` / `descendent-of` filter to its members
-// via the closure table: every descendant of `anchorCode` in this CodeSystem.
+# Resolves an intensional `concept is-a` / `descendent-of` filter to its members via the closure table.
+#
+# + codeSystemId - Internal id of the CodeSystem to search within
+# + anchorCode - Code of the anchor concept whose descendants are collected
+# + includeSelf - Whether to include the anchor concept itself in the result
+# + textFilter - Optional case-insensitive substring filter applied to concept display text
+# + return - Matching concepts as `r4:ValueSetExpansionContains` entries
 isolated function closureMembers(int codeSystemId, string anchorCode, boolean includeSelf, string? textFilter) returns r4:ValueSetExpansionContains[] {
     r4:ValueSetExpansionContains[] members = [];
 
@@ -680,6 +787,10 @@ type UnmatchedClosureConcept record {|
     string code;
 |};
 
+# Looks up a named closure table, creating it with version 0 if it doesn't exist yet.
+#
+# + name - Client-supplied name identifying the closure table
+# + return - The existing or newly-created `ClosureTableRow`, or an `r4:FHIRError` if creation fails
 isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r4:FHIRError {
     sql:ParameterizedQuery selectQuery = sql:queryConcat(
             `SELECT * FROM `, escapeToQuery("closure_tables"),
@@ -703,11 +814,23 @@ isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r
                 cause = result,
                 httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
-    int? generatedId = <int?>result.lastInsertId;
-    int closureTableId = generatedId ?: 0;
+    int closureTableId = 0;
+    string|int? lastInsertId = result.lastInsertId;
+    if lastInsertId is int {
+        closureTableId = lastInsertId;
+    } else if lastInsertId is string {
+        int|error parsedId = int:fromString(lastInsertId);
+        if parsedId is int {
+            closureTableId = parsedId;
+        }
+    }
     return {closureTableId, name, currentVersion: 0};
 }
 
+# Retrieves the internal concept ids already registered in a closure table.
+#
+# + closureTableId - Internal id of the closure table
+# + return - Array of concept ids known to the table, or an empty array on query failure
 isolated function getKnownConceptIds(int closureTableId) returns int[] {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT `, escapeToQuery("conceptId"), ` FROM `, escapeToQuery("closure_table_concepts"),
@@ -721,6 +844,11 @@ isolated function getKnownConceptIds(int closureTableId) returns int[] {
     return rows.map(r => r.conceptId);
 }
 
+# Registers a concept as known to a closure table.
+#
+# + closureTableId - Internal id of the closure table
+# + conceptId - Internal id of the concept to register
+# + return - An `r4:FHIRError` if the insert fails, `()` otherwise
 isolated function addClosureTableConcept(int closureTableId, int conceptId) returns r4:FHIRError? {
     sql:ParameterizedQuery query = sql:queryConcat(
             `INSERT INTO `, escapeToQuery("closure_table_concepts"),
@@ -736,6 +864,11 @@ isolated function addClosureTableConcept(int closureTableId, int conceptId) retu
     }
 }
 
+# Retrieves the internal ids of every ancestor of a concept within a CodeSystem.
+#
+# + conceptId - Internal id of the concept whose ancestors are looked up
+# + codeSystemId - Internal id of the CodeSystem the concept belongs to
+# + return - Array of ancestor concept ids, or an empty array on query failure
 isolated function getAncestorConceptIds(int conceptId, int codeSystemId) returns int[] {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT `, escapeToQuery("ancestorConceptId"), ` FROM `, escapeToQuery("concept_closure"),
@@ -751,10 +884,12 @@ isolated function getAncestorConceptIds(int conceptId, int codeSystemId) returns
     return rows.map(r => r.ancestorConceptId);
 }
 
-// Restricts descendant lookup to a specific candidate set (the concepts
-// already known to this closure table), rather than returning every
-// descendant - $closure only needs to report pairs involving concepts the
-// client has actually added.
+# Restricts descendant lookup to a specific candidate set, rather than returning every descendant, since `$closure` only needs to report pairs involving concepts the client has actually added.
+#
+# + conceptId - Internal id of the concept whose descendants are looked up
+# + codeSystemId - Internal id of the CodeSystem the concept belongs to
+# + candidateIds - Concept ids to restrict the result to; typically the concepts already known to this closure table
+# + return - The subset of `candidateIds` that are descendants of `conceptId`, or an empty array if `candidateIds` is empty or the query fails
 isolated function getDescendantConceptIdsAmong(int conceptId, int codeSystemId, int[] candidateIds) returns int[] {
     if candidateIds.length() == 0 {
         return [];
@@ -783,6 +918,12 @@ isolated function getDescendantConceptIdsAmong(int conceptId, int codeSystemId, 
     return rows.map(r => r.descendantConceptId);
 }
 
+# Checks whether an ancestor/descendant pair has already been reported for a closure table.
+#
+# + closureTableId - Internal id of the closure table
+# + ancestorId - Internal concept id of the ancestor
+# + descendantId - Internal concept id of the descendant
+# + return - `true` if the pair was already reported, `false` otherwise
 isolated function isPairReported(int closureTableId, int ancestorId, int descendantId) returns boolean {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT 1 FROM `, escapeToQuery("closure_table_pairs"),
@@ -795,6 +936,13 @@ isolated function isPairReported(int closureTableId, int ancestorId, int descend
     return rows is error ? false : rows.length() > 0;
 }
 
+# Records a subsumption pair as reported for a closure table at a given version.
+#
+# + closureTableId - Internal id of the closure table
+# + ancestorId - Internal concept id of the ancestor
+# + descendantId - Internal concept id of the descendant
+# + version - Version number the pair is being reported at
+# + return - An `r4:FHIRError` if the insert fails, `()` otherwise
 isolated function recordClosurePair(int closureTableId, int ancestorId, int descendantId, int version) returns r4:FHIRError? {
     sql:ParameterizedQuery query = sql:queryConcat(
             `INSERT INTO `, escapeToQuery("closure_table_pairs"),
@@ -812,11 +960,12 @@ isolated function recordClosurePair(int closureTableId, int ancestorId, int desc
     }
 }
 
-// Pairs reported after `sinceVersion` support a resync: a client that missed
-// some responses can catch up by version number. `excludeVersion` is the
-// version this same call just produced (already returned separately via the
-// caller's own newly-discovered pairs), so it's skipped here to avoid
-// duplicating it in the resync set.
+# Retrieves closure table pairs reported after a given version, to support a client resync.
+#
+# + closureTableId - Internal id of the closure table
+# + sinceVersion - Only pairs reported after this version are returned
+# + excludeVersion - Version to exclude from the results; typically the version this same call just produced, since that's already returned separately via the caller's own newly-discovered pairs
+# + return - Matching `ClosureTablePairRow` entries, or an empty array on query failure
 isolated function getPairsSinceVersion(int closureTableId, int sinceVersion, int excludeVersion) returns ClosureTablePairRow[] {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT * FROM `, escapeToQuery("closure_table_pairs"),
@@ -832,6 +981,11 @@ isolated function getPairsSinceVersion(int closureTableId, int sinceVersion, int
     return rows;
 }
 
+# Updates a closure table's current version number.
+#
+# + closureTableId - Internal id of the closure table
+# + newVersion - New version number to set
+# + return - An `r4:FHIRError` if the update fails, `()` otherwise
 isolated function bumpClosureTableVersion(int closureTableId, int newVersion) returns r4:FHIRError? {
     sql:ParameterizedQuery query = sql:queryConcat(
             `UPDATE `, escapeToQuery("closure_tables"), ` SET `, escapeToQuery("currentVersion"), ` = ${newVersion}`,
@@ -847,9 +1001,10 @@ isolated function bumpClosureTableVersion(int closureTableId, int newVersion) re
     }
 }
 
-// Resolves a stored conceptId back to its code, display, and CodeSystem url -
-// needed to build the response, since closure_table_pairs only stores internal
-// conceptIds.
+# Resolves a stored conceptId back to its code, display, and CodeSystem url. Needed to build the `$closure` response, since `closure_table_pairs` only stores internal conceptIds.
+#
+# + conceptId - Internal id of the concept to resolve
+# + return - A `[code, display, systemUrl]` tuple, or an `error` if the concept can't be found
 isolated function getConceptRefById(int conceptId) returns [string, string?, string]|error {
     sql:ParameterizedQuery conceptQuery = sql:queryConcat(
             `SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("conceptId"), ` = ${conceptId}`);
@@ -869,11 +1024,13 @@ isolated function getConceptRefById(int conceptId) returns [string, string?, str
     return [storeConcept.code, storeConcept.display, systemUrl];
 }
 
-// Turns the newly-discovered (and any resynced) subsumption pairs into a
-// ConceptMap: one group per (descendant-system, ancestor-system) pair, with
-// each element mapping a descendant code to its ancestor via a "subsumes"
-// equivalence. Unmatched input concepts get their own element with an
-// "unmatched" target, per the $closure spec.
+# Turns newly-discovered (and any resynced) subsumption pairs into a ConceptMap, one group per (descendant-system, ancestor-system) pair, with each element mapping a descendant code to its ancestor via a "subsumes" equivalence. Unmatched input concepts get their own element with an "unmatched" target, per the `$closure` spec.
+#
+# + name - Name of the closure table the pairs belong to
+# + 'version - Version number to stamp on the resulting ConceptMap
+# + pairs - Subsumption pairs to convert into map elements
+# + unmatched - Client-supplied concepts that couldn't be resolved to stored concepts
+# + return - The built `r4:ConceptMap`, or an `r4:FHIRError` on failure
 isolated function buildClosureConceptMap(string name, int 'version, ClosureTablePairRow[] pairs, UnmatchedClosureConcept[] unmatched)
         returns r4:ConceptMap|r4:FHIRError {
     // Group pairs by (sourceSystem, targetSystem) - always the same system for
@@ -936,7 +1093,10 @@ isolated function buildClosureConceptMap(string name, int 'version, ClosureTable
     return conceptMap;
 }
 
-// True if this CodeSystem's hierarchy is stored in the closure table (SNOMED)
+# Checks whether a CodeSystem's hierarchy is stored in the closure table (e.g. SNOMED).
+#
+# + codeSystemId - Internal id of the CodeSystem to check
+# + return - `true` if closure rows exist for the CodeSystem, `false` otherwise
 isolated function hasClosureRows(int codeSystemId) returns boolean {
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT 1 FROM `, escapeToQuery("concept_closure"),
@@ -947,8 +1107,13 @@ isolated function hasClosureRows(int codeSystemId) returns boolean {
     return results is error ? false : results.length() > 0;
 }
 
-// Finds every descendant of a concept by walking parent links, for
-// CodeSystems that don't have a closure table (e.g. LOINC)
+# Finds every descendant of a concept by walking parent links, for CodeSystems that don't have a closure table (e.g. LOINC).
+#
+# + codeSystemId - Internal id of the CodeSystem to search within
+# + anchorCode - Code of the anchor concept whose descendants are collected
+# + includeSelf - Whether to include the anchor concept itself in the result
+# + textFilter - Optional case-insensitive substring filter applied to concept display text
+# + return - Matching concepts as `r4:ValueSetExpansionContains` entries
 isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boolean includeSelf, string? textFilter) returns r4:ValueSetExpansionContains[] {
     r4:ValueSetExpansionContains[] members = [];
 
@@ -1007,8 +1172,11 @@ isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boo
     return members;
 }
 
-// Keeps entries of `a` whose code also appears in `b` - used to AND together
-// multiple filters on the same compose.include.
+# Keeps entries of `a` whose code also appears in `b`, used to AND together multiple filters on the same compose.include.
+#
+# + a - Entries to filter
+# + b - Entries whose codes are used as the allow-list
+# + return - The subset of `a` whose code is present in `b`
 isolated function intersectByCode(r4:ValueSetExpansionContains[] a, r4:ValueSetExpansionContains[] b) returns r4:ValueSetExpansionContains[] {
     map<boolean> codesInB = {};
     foreach var entry in b {
@@ -1025,13 +1193,18 @@ isolated function intersectByCode(r4:ValueSetExpansionContains[] a, r4:ValueSetE
     return result;
 }
 
-// Exact string match, used as the comparator for the `=` filter operator.
+# Compares two strings for exact equality; used as the comparator for the `=` filter operator.
+#
+# + actual - Value to test
+# + target - Value to compare against
+# + return - `true` if `actual` equals `target`, `false` otherwise
 isolated function stringEquals(string actual, string target) returns boolean => actual == target;
 
-// Full-string regex match (Java Pattern semantics), used as the comparator
-// for the `regex` filter operator. Client-supplied patterns that look
-// catastrophically-backtracking are rejected (treated as a non-match) rather
-// than evaluated - see isPathologicalRegex.
+# Full-string regex match (Java Pattern semantics), used as the comparator for the `regex` filter operator. Client-supplied patterns that look catastrophically-backtracking are rejected (treated as a non-match) rather than evaluated - see `isPathologicalRegex`.
+#
+# + actual - Value to test
+# + pattern - Regex pattern to match against
+# + return - `true` if `actual` fully matches `pattern` and `pattern` isn't flagged as pathological, `false` otherwise
 isolated function regexMatches(string actual, string pattern) returns boolean {
     if isPathologicalRegex(pattern) {
         return false;
@@ -1039,21 +1212,10 @@ isolated function regexMatches(string actual, string pattern) returns boolean {
     return regex:matches(actual, pattern);
 }
 
-// Heuristically flags "obviously pathological" regex patterns before they
-// ever reach the (backtracking) regex engine - specifically, a quantifier
-// (+, *, {n,m}) applied directly around a group whose own content already
-// contains a quantifier, e.g. ((a+)+)+. That shape is the textbook trigger
-// for catastrophic backtracking: on a long input that almost-but-doesn't
-// match, a backtracking engine (Java's java.util.regex, which regex:matches
-// is backed by) can take exponential time working through every way to
-// split the input among the nested repetitions - even a few dozen
-// characters can mean an effectively infinite hang.
-//
-// This is a heuristic, not a full static analysis of the pattern: it catches
-// the common, well-known nested-quantifier family (including the exact shape
-// the HL7 tx-ecosystem "regex-bad" conformance tests probe for), but not
-// every possible ReDoS shape - e.g. ambiguous alternation like (a|ab)*c
-// isn't structurally a nested quantifier, so it passes through unflagged.
+# Heuristically flags "obviously pathological" regex patterns before they ever reach the (backtracking) regex engine - specifically, a quantifier (+, *, {n,m}) applied directly around a group whose own content already contains a quantifier, e.g. ((a+)+)+. That shape is the textbook trigger for catastrophic backtracking: on a long input that almost-but-doesn't match, a backtracking engine (Java's java.util.regex, which `regex:matches` is backed by) can take exponential time working through every way to split the input among the nested repetitions, so even a few dozen characters can mean an effectively infinite hang. This is a heuristic, not a full static analysis of the pattern: it catches the common, well-known nested-quantifier family (including the exact shape the HL7 tx-ecosystem "regex-bad" conformance tests probe for), but not every possible ReDoS shape - e.g. ambiguous alternation like (a|ab)*c isn't structurally a nested quantifier, so it passes through unflagged.
+#
+# + pattern - Regex pattern to inspect
+# + return - `true` if the pattern matches the known nested-quantifier ReDoS shape, `false` otherwise
 isolated function isPathologicalRegex(string pattern) returns boolean {
     boolean[] groupHasQuantifier = [];
     boolean inCharClass = false;
@@ -1115,8 +1277,14 @@ isolated function isPathologicalRegex(string pattern) returns boolean {
     return false;
 }
 
-// Scans a CodeSystem's concepts and keeps the ones matching a filter,
-// using the given comparator (exact match or regex) on a code or property
+# Scans a CodeSystem's concepts and keeps the ones matching a filter, using the given comparator (exact match or regex) on a code or property.
+#
+# + codeSystemId - Internal id of the CodeSystem to search within
+# + property - Property code to match against, or `"code"` to match the concept's own code
+# + value - Value to compare the property (or code) against, via `matcher`
+# + textFilter - Optional case-insensitive substring filter applied to concept display text
+# + matcher - Comparator function used to test the property/code value against `value`
+# + return - Matching concepts as `r4:ValueSetExpansionContains` entries
 isolated function filterConceptsByProperty(int codeSystemId, string property, string value, string? textFilter,
         isolated function (string actual, string target) returns boolean matcher)
     returns r4:ValueSetExpansionContains[] {
@@ -1167,7 +1335,10 @@ isolated function filterConceptsByProperty(int codeSystemId, string property, st
     return members;
 }
 
-// Returns a concept-property's value as plain text, whatever type it's stored as
+# Returns a concept property's value as plain text, whatever type it's stored as.
+#
+# + prop - Concept property to read the value from
+# + return - The property's value as a string, or `()` if none of the supported value types is set
 isolated function propertyValueAsString(r4:CodeSystemConceptProperty prop) returns string? {
     if prop.valueString is string {
         return <string>prop.valueString;
@@ -1184,6 +1355,11 @@ isolated function propertyValueAsString(r4:CodeSystemConceptProperty prop) retur
     return ();
 }
 
+# Walks up the parent chain from a concept node to check whether a target ancestor id is reached.
+#
+# + targetAncestorId - Internal concept id to search for among the ancestors
+# + currentNode - Node to start walking up from
+# + return - `true` if `targetAncestorId` is found while walking up, `false` otherwise
 isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode) returns boolean {
     int? parentId = currentNode.parentConceptId;
 
@@ -1202,6 +1378,12 @@ isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode)
     return false;
 }
 
+# Finds a concept by code within a ValueSet, searching its included concepts, included CodeSystems, and any nested ValueSets recursively.
+#
+# + system - Canonical URL of the ValueSet to search
+# + code - Code to look up
+# + version - Optional version of the ValueSet
+# + return - The matching concept's details, or an `r4:FHIRError` if not found
 isolated function findConceptInValueSet(r4:uri system, r4:code code, string? version) returns terminology:CodeConceptDetails|r4:FHIRError {
     // check whether the value set exists
     var valueset = getStoreValueSetByURL(system, version);
@@ -1294,6 +1476,12 @@ isolated function findConceptInValueSet(r4:uri system, r4:code code, string? ver
             httpStatusCode = http:STATUS_NOT_FOUND);
 }
 
+# Finds a concept by code within a CodeSystem.
+#
+# + system - Canonical URL of the CodeSystem to search
+# + code - Code to look up
+# + version - Optional version of the CodeSystem
+# + return - The matching concept's details, or an `r4:FHIRError` if not found
 isolated function findConceptInCodeSystem(r4:uri system, r4:code code, string? version) returns terminology:CodeConceptDetails|r4:FHIRError {
     // check whether the code system exists
     var codeSystem = getStoreCodeSystemByURL(system, version);
@@ -1329,6 +1517,11 @@ isolated function findConceptInCodeSystem(r4:uri system, r4:code code, string? v
     };
 }
 
+# Retrieves a CodeSystem by its resource id, decoded into a FHIR `r4:CodeSystem`.
+#
+# + id - Resource id of the CodeSystem
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `r4:CodeSystem`, or an `error` if not found
 isolated function getCodeSystemByID(string id, string? version = ()) returns r4:CodeSystem|error {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1365,12 +1558,22 @@ isolated function getCodeSystemByID(string id, string? version = ()) returns r4:
     return byteToCodeSystem(codeSystems[0].codeSystem);
 }
 
+# Retrieves a CodeSystem by its canonical URL, decoded into a FHIR `r4:CodeSystem`.
+#
+# + system - Canonical URL of the CodeSystem
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `r4:CodeSystem`, or an `error` if not found
 isolated function getCodeSystemByURL(string system, string? version = ()) returns r4:CodeSystem|error {
     store_h2:CodeSystem storeCodeSystem = check getStoreCodeSystemByURL(system, version);
 
     return byteToCodeSystem(storeCodeSystem.codeSystem);
 }
 
+# Retrieves the stored (undecoded) CodeSystem row by its canonical URL.
+#
+# + system - Canonical URL of the CodeSystem
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `store_h2:CodeSystem` row, or an `error` if not found
 isolated function getStoreCodeSystemByURL(string system, string? version = ()) returns store_h2:CodeSystem|error {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1407,6 +1610,11 @@ isolated function getStoreCodeSystemByURL(string system, string? version = ()) r
     return codeSystems[0];
 }
 
+# Retrieves a ValueSet by its resource id, decoded into a FHIR `r4:ValueSet`.
+#
+# + id - Resource id of the ValueSet
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `r4:ValueSet`, or an `error` if not found
 isolated function getValueSetByID(string id, string? version = ()) returns r4:ValueSet|error {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1444,12 +1652,22 @@ isolated function getValueSetByID(string id, string? version = ()) returns r4:Va
     return byteToValueSet(valueSets[0].valueSet);
 }
 
+# Retrieves a ValueSet by its canonical URL, decoded into a FHIR `r4:ValueSet`.
+#
+# + system - Canonical URL of the ValueSet
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `r4:ValueSet`, or an `error` if not found
 isolated function getValueSetByURL(string system, string? version = ()) returns r4:ValueSet|error {
     store_h2:ValueSet storeValueSet = check getStoreValueSetByURL(system, version);
 
     return byteToValueSet(storeValueSet.valueSet);
 }
 
+# Retrieves the stored (undecoded) ValueSet row by its canonical URL.
+#
+# + system - Canonical URL of the ValueSet
+# + version - Optional version; when omitted, the latest version is returned
+# + return - The matching `store_h2:ValueSet` row, or an `error` if not found
 isolated function getStoreValueSetByURL(string system, string? version = ()) returns store_h2:ValueSet|error {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1485,6 +1703,11 @@ isolated function getStoreValueSetByURL(string system, string? version = ()) ret
     return valueSets[0];
 }
 
+# Retrieves the stored concept row matching a code within a CodeSystem.
+#
+# + codeSystemId - Internal id of the CodeSystem to search within
+# + code - Code to look up
+# + return - The matching `store_h2:Concept` row, or an `r4:FHIRError` if not found
 isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns store_h2:Concept|r4:FHIRError {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1507,13 +1730,12 @@ isolated function getStoreConceptByCode(int codeSystemId, r4:code code) returns 
     return getStoreConcept(sql:queryConcat(`SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("code"), ` = ${code} AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`));
 }
 
-// Fetch a concept's direct parents (via concept_closure at depth=1, since a
-// concept can have more than one is-a parent - e.g. SNOMED) and direct children
-// (concepts whose parentConceptId points at this concept). Used to emit `parent`
-// and `child` property entries in $lookup responses.
-//
-// Returns [parents, children] — both empty arrays if the concept has none. Any
-// DB failure returns [[], []] so the caller can still emit a flat lookup response.
+# Fetches a concept's direct parents (via `concept_closure` at depth=1, since a concept can have more than one is-a parent - e.g. SNOMED) and direct children (concepts whose `parentConceptId` points at this concept). Used to emit `parent` and `child` property entries in `$lookup` responses.
+#
+# + system - Canonical URL of the CodeSystem the concept belongs to
+# + code - Code of the concept to look up
+# + version - Optional version of the CodeSystem
+# + return - A `[parents, children]` tuple; both empty if the concept has no parents/children, or if any DB lookup fails
 isolated function getConceptHierarchy(r4:uri system, r4:code code, string? version = ())
         returns [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
@@ -1578,10 +1800,12 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
     return [parents, children];
 }
 
-// Reads a concept's stored abstract/inactive derivation inputs. abstract is set
-// when the concept has property notSelectable=true (or abstract=true); inactive
-// is set when the concept has an explicit inactive=true property, or its status
-// property is retired/deprecated.
+# Derives a concept's abstract/inactive flags from its stored properties. `abstract` is set when the concept has property notSelectable=true (or abstract=true); `inactive` is set when the concept has an explicit inactive=true property, or its status property is retired/deprecated.
+#
+# + system - Canonical URL of the CodeSystem the concept belongs to
+# + code - Code of the concept to look up
+# + version - Optional version of the CodeSystem
+# + return - A `[isAbstract, isInactive]` tuple, defaulting to `[false, false]` if the concept or CodeSystem can't be found
 isolated function getConceptFlags(r4:uri system, r4:code code, string? version = ()) returns [boolean, boolean] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
     if storeCs is error {
@@ -1626,12 +1850,12 @@ type ConceptRelationshipQueryRow record {|
     int codeSystemId;
 |};
 
-// Fetch a concept's active non-is-a relationships (clinical attributes: Finding
-// site, Associated morphology, etc, from concept_relationships) and resolve the
-// type and destination codes' display text where available. A relationship
-// whose destination concept can't be found is skipped - typeCode/valueCode
-// (SCTIDs) are always meaningful on their own, but a property entry with
-// neither a display for its code nor for its value isn't useful to emit.
+# Fetches a concept's active non-is-a relationships (clinical attributes: Finding site, Associated morphology, etc, from `concept_relationships`) and resolves the type and destination codes' display text where available. A relationship whose destination concept can't be found is skipped - typeCode/valueCode (SCTIDs) are always meaningful on their own, but a property entry with neither a display for its code nor for its value isn't useful to emit.
+#
+# + system - Canonical URL of the CodeSystem the concept belongs to
+# + code - Code of the concept to look up
+# + version - Optional version of the CodeSystem
+# + return - Resolved `ConceptAttributeRelationship` entries; a relationship whose destination concept can't be found is skipped
 isolated function getConceptAttributeRelationships(r4:uri system, r4:code code, string? version = ())
         returns ConceptAttributeRelationship[] {
     store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
@@ -1684,6 +1908,10 @@ isolated function getConceptAttributeRelationships(r4:uri system, r4:code code, 
     return resolved;
 }
 
+# Runs a query for a single stored concept row and returns the first match.
+#
+# + sqlQuery - Parameterized SQL query selecting from the concepts table
+# + return - The first matching `store_h2:Concept` row, or an `r4:FHIRError` if the query fails or no row matches
 isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store_h2:Concept|r4:FHIRError {
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(sqlQuery);
     store_h2:Concept[]|error dbConcepts = streamToStoreConcept(conceptStream);
@@ -1710,6 +1938,11 @@ isolated function getStoreConcept(sql:ParameterizedQuery sqlQuery) returns store
             httpStatusCode = http:STATUS_NOT_FOUND);
 }
 
+# Looks up a concept's node (id, code, parent) by code within a CodeSystem.
+#
+# + code - Code to look up
+# + codeSystemId - Internal id of the CodeSystem to search within
+# + return - The matching `ConceptNode`, or an `r4:FHIRError` if the query fails or no concept matches
 isolated function getConceptNode(string code, int codeSystemId) returns ConceptNode|r4:FHIRError {
     // TODO: Replace the manual query-based search operation below with the commented logic once the following persist issue is resolved:
     // https://github.com/ballerina-platform/ballerina-library/issues/7920
@@ -1746,6 +1979,10 @@ isolated function getConceptNode(string code, int codeSystemId) returns ConceptN
             httpStatusCode = http:STATUS_NOT_FOUND);
 }
 
+# Kicks off asynchronous extraction and persistence of a CodeSystem's top-level concepts.
+#
+# + codeSystem - CodeSystem whose concepts are to be extracted
+# + codeSystemId - Internal id of the already-persisted CodeSystem
 isolated function extractConceptsFromCodeSystem(r4:CodeSystem codeSystem, int codeSystemId) {
     if codeSystem.concept !is () {
         r4:CodeSystemConcept[]? concepts = codeSystem.concept;
@@ -1758,6 +1995,12 @@ isolated function extractConceptsFromCodeSystem(r4:CodeSystem codeSystem, int co
     }
 }
 
+# Saves a CodeSystem concept and its descendants, and writes the corresponding `concept_closure` rows so is-a / descendent-of / child-of queries can hit an indexed lookup.
+#
+# + var_concept - Concept to save
+# + codeSystemId - Internal id of the CodeSystem the concept belongs to
+# + parentId - Internal id of the parent concept, or `()` for a top-level concept
+# + ancestorPath - Internal ids of the ancestors on the current recursion path, nearest ancestor last
 isolated function extractConceptsFromCodeSystemRecursive(r4:CodeSystemConcept var_concept, int codeSystemId, int? parentId = (), int[] ancestorPath = []) {
     int|error result = saveCodeSystemConcept(var_concept, codeSystemId, parentId);
     if result is error {
@@ -1796,6 +2039,12 @@ isolated function extractConceptsFromCodeSystemRecursive(r4:CodeSystemConcept va
     }
 }
 
+# Persists a single CodeSystem concept.
+#
+# + concept - Concept to persist
+# + codeSystemId - Internal id of the CodeSystem the concept belongs to
+# + parentId - Internal id of the parent concept, or `()` for a top-level concept
+# + return - The newly-inserted concept's internal id, or an `error` if the insert fails
 isolated function saveCodeSystemConcept(r4:CodeSystemConcept concept, int codeSystemId, int? parentId) returns int|error {
     store_h2:ConceptInsert dbConceptInsert = {
         code: concept.code,
@@ -1810,7 +2059,10 @@ isolated function saveCodeSystemConcept(r4:CodeSystemConcept concept, int codeSy
     return id[0];
 }
 
-// Extract concepts from a ValueSet and save them recursively
+# Extracts and persists a ValueSet's compose.include entries.
+#
+# + valueSet - ValueSet whose compose includes are to be extracted
+# + valueSetId - Internal id of the already-persisted ValueSet
 isolated function extractConceptsFromValueSet(r4:ValueSet valueSet, int valueSetId) {
     r4:ValueSetCompose? compose = valueSet.compose;
     if compose !is () {
@@ -1823,7 +2075,11 @@ isolated function extractConceptsFromValueSet(r4:ValueSet valueSet, int valueSet
     }
 }
 
-// Save a ValueSet concept to the database
+# Persists a single `compose.include` entry: its referenced concepts, its whole CodeSystem, or its nested ValueSet references.
+#
+# + include - Compose include entry to persist
+# + valueSetId - Internal id of the ValueSet the entry belongs to
+# + return - An `error` if persistence fails, `()` otherwise
 isolated function saveValueSetComposeInclude(r4:ValueSetComposeInclude include, int valueSetId) returns error? {
     // concept can be a code system or a set of concepts
     if include.system is r4:uri {
@@ -1857,6 +2113,12 @@ isolated function saveValueSetComposeInclude(r4:ValueSetComposeInclude include, 
     }
 }
 
+# Persists a reference from a ValueSet compose include to a single concept.
+#
+# + concept - Compose include concept entry naming the code to reference
+# + valueSetId - Internal id of the ValueSet the reference belongs to
+# + codeSystemId - Internal id of the CodeSystem the concept's code belongs to
+# + return - An `error` if the concept can't be found or persistence fails, `()` otherwise
 isolated function saveValueSetConcept(r4:ValueSetComposeIncludeConcept concept, int valueSetId, int codeSystemId) returns error? {
     // find the concept in the database
     store_h2:Concept dbConcept = check getStoreConceptByCode(codeSystemId, concept.code);
@@ -1878,6 +2140,11 @@ isolated function saveValueSetConcept(r4:ValueSetComposeIncludeConcept concept, 
     _ = check sClient->/valuesetcomposeincludeconcepts.post([dbConceptInsert]);
 }
 
+# Persists a reference from a ValueSet compose include to an entire CodeSystem.
+#
+# + valueSetId - Internal id of the ValueSet the reference belongs to
+# + codeSystemId - Internal id of the referenced CodeSystem
+# + return - An `error` if persistence fails, `()` otherwise
 isolated function saveValueSetCodeSystem(int valueSetId, int codeSystemId) returns error? {
     store_h2:ValueSetComposeIncludeInsert dbValueSetComposeIncludeInsert = {
         systemFlag: true,
@@ -1889,6 +2156,11 @@ isolated function saveValueSetCodeSystem(int valueSetId, int codeSystemId) retur
     _ = check sClient->/valuesetcomposeincludes.post([dbValueSetComposeIncludeInsert]);
 }
 
+# Persists a reference from a ValueSet compose include to one or more nested ValueSets.
+#
+# + valueSetId - Internal id of the ValueSet the reference belongs to
+# + valueSets - Canonical URLs (optionally with `|version`) of the nested ValueSets
+# + return - An `error` if persistence fails, `()` otherwise
 isolated function saveValueSetValueSet(int valueSetId, r4:canonical[] valueSets) returns error? {
     // valueset reference can't be with a system or concepts
     store_h2:ValueSetComposeIncludeInsert dbValueSetComposeIncludeInsert = {
@@ -1904,6 +2176,11 @@ isolated function saveValueSetValueSet(int valueSetId, r4:canonical[] valueSets)
     check saveNestedValueSetsInValueSetComposeInclude(valueSets, result[0]);
 }
 
+# Resolves each nested ValueSet canonical reference to its stored row and persists the link to the compose include.
+#
+# + valueSets - Canonical URLs (optionally with `|version`) of the nested ValueSets
+# + dbValueSetComposeIncludeId - Internal id of the compose include the references belong to
+# + return - An `r4:FHIRError` if a referenced ValueSet can't be found, or an `error` if persistence fails; `()` otherwise
 isolated function saveNestedValueSetsInValueSetComposeInclude(r4:canonical[] valueSets, int dbValueSetComposeIncludeId) returns error? {
     // find for valueset in the database
     foreach r4:canonical valueSet in valueSets {

@@ -40,9 +40,11 @@ type RelationshipRow record {|
     int destinationConceptId;
 |};
 
-// Parses an RF2 release directory and loads it into the database. Any earlier
-// load of the same url and version is replaced, and a partial load is rolled
-// back if the import fails partway.
+# Parses an RF2 release directory and loads it into the database. Any earlier load of the same url and version is replaced, and a partial load is rolled back if the import fails partway.
+#
+# + dirPath - The path of the extracted RF2 release directory
+# + version - The version to record for the imported CodeSystem, if given
+# + return - A summary of the import counts, or a `FHIRError` if the import fails
 public isolated function importSnomedToDb(string dirPath, string? version) returns snomed:SnomedImportSummary|r4:FHIRError {
     snomed:SnomedImportBundle|error bundle = snomed:buildSnomedImport(dirPath, version);
     if bundle is error {
@@ -114,8 +116,11 @@ public isolated function importSnomedToDb(string dirPath, string? version) retur
     };
 }
 
-// Inserts the concepts first to obtain their database ids, then uses those ids
-// to build the closure rows. Returns the counts of each.
+# Inserts the concepts first to obtain their database ids, then uses those ids to build the closure and attribute-relationship rows.
+#
+# + bundle - The parsed SNOMED import bundle
+# + codeSystemId - The database id of the CodeSystem row the concepts belong to
+# + return - A tuple of the number of concepts imported, closure rows written, and relationship rows written, or a `FHIRError` if any insert fails
 isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int codeSystemId) returns [int, int, int]|r4:FHIRError {
     int imported = 0;
     map<int> dbIdByCode = {};
@@ -172,8 +177,11 @@ isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int c
     return [imported, closureRowsWritten, relationshipRowsWritten];
 }
 
-// Removes any earlier load of the same url and version, so re-uploading a
-// release replaces it instead of duplicating it.
+# Removes any earlier load of the same url and version, so re-uploading a release replaces it instead of duplicating it.
+#
+# + url - The CodeSystem canonical URL to check for prior loads
+# + 'version - The CodeSystem version to check for prior loads
+# + return - The number of prior loads removed, or a `FHIRError` if lookup or deletion fails
 isolated function replacePriorLoads(string url, string 'version) returns int|r4:FHIRError {
     sql:ParameterizedQuery q = sql:queryConcat(
             `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
@@ -204,38 +212,44 @@ isolated function replacePriorLoads(string url, string 'version) returns int|r4:
     return ids.length();
 }
 
-// Deletes a CodeSystem and everything under it, in dependency order: closure
-// rows, relationship rows, then any valueset_compose_include_concepts rows
-// pointing at this CodeSystem's concepts (write-only bookkeeping table -
-// $expand/$validate-code/etc. all resolve concepts via the stored ValueSet
-// JSON, not this table, so dropping these rows has no functional effect on
-// existing ValueSets), then concepts, then the CodeSystem itself.
+# Deletes a CodeSystem and everything under it, in dependency order: closure rows, relationship rows, then any valueset_compose_include_concepts rows pointing at this CodeSystem's concepts (write-only bookkeeping table - $expand/$validate-code/etc. all resolve concepts via the stored ValueSet JSON, not this table, so dropping these rows has no functional effect on existing ValueSets), then concepts, then the CodeSystem itself.
+#
+# + codeSystemId - The database id of the CodeSystem to delete along with its dependents
+# + return - An `error` if the deletion transaction fails, `()` otherwise
 isolated function deleteSnomedCodeSystemCascade(int codeSystemId) returns error? {
-    sql:ParameterizedQuery delClosure = sql:queryConcat(
-            `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
-    _ = check sClient->executeNativeSQL(delClosure);
+    transaction {
+        sql:ParameterizedQuery delClosure = sql:queryConcat(
+                `DELETE FROM `, escapeToQuery("concept_closure"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+        _ = check sClient->executeNativeSQL(delClosure);
 
-    sql:ParameterizedQuery delRelationships = sql:queryConcat(
-            `DELETE FROM `, escapeToQuery("concept_relationships"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
-    _ = check sClient->executeNativeSQL(delRelationships);
+        sql:ParameterizedQuery delRelationships = sql:queryConcat(
+                `DELETE FROM `, escapeToQuery("concept_relationships"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+        _ = check sClient->executeNativeSQL(delRelationships);
 
-    sql:ParameterizedQuery delComposeIncludeConcepts = sql:queryConcat(
-            `DELETE FROM `, escapeToQuery("valueset_compose_include_concepts"),
-            ` WHERE `, escapeToQuery("conceptConceptId"), ` IN (SELECT `, escapeToQuery("conceptId"),
-            ` FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId})`);
-    _ = check sClient->executeNativeSQL(delComposeIncludeConcepts);
+        sql:ParameterizedQuery delComposeIncludeConcepts = sql:queryConcat(
+                `DELETE FROM `, escapeToQuery("valueset_compose_include_concepts"),
+                ` WHERE `, escapeToQuery("conceptConceptId"), ` IN (SELECT `, escapeToQuery("conceptId"),
+                ` FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId})`);
+        _ = check sClient->executeNativeSQL(delComposeIncludeConcepts);
 
-    sql:ParameterizedQuery delConcepts = sql:queryConcat(
-            `DELETE FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
-    _ = check sClient->executeNativeSQL(delConcepts);
+        sql:ParameterizedQuery delConcepts = sql:queryConcat(
+                `DELETE FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+        _ = check sClient->executeNativeSQL(delConcepts);
 
-    sql:ParameterizedQuery delCodeSystem = sql:queryConcat(
-            `DELETE FROM `, escapeToQuery("codesystems"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
-    _ = check sClient->executeNativeSQL(delCodeSystem);
+        sql:ParameterizedQuery delCodeSystem = sql:queryConcat(
+                `DELETE FROM `, escapeToQuery("codesystems"), ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+        _ = check sClient->executeNativeSQL(delCodeSystem);
+
+        check commit;
+    }
 }
 
-// Writes one closure row per concept-ancestor pair, plus a depth-0 self row
-// for each concept. Rows are inserted in batches. Returns the row count.
+# Writes one closure row per concept-ancestor pair, plus a depth-0 self row for each concept. Rows are inserted in batches.
+#
+# + isaParentsByChild - The direct is-a parent SCTIDs for each concept code
+# + dbIdByCode - The database id assigned to each already-inserted concept code
+# + codeSystemId - The database id of the CodeSystem the closure rows belong to
+# + return - The number of closure rows written, or a `FHIRError` if a batch insert fails
 isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
     int written = 0;
     ClosureRow[] batch = [];
@@ -276,8 +290,11 @@ isolated function writeClosure(map<string[]> isaParentsByChild, map<int> dbIdByC
     return written;
 }
 
-// Inserts a batch as one multi-row statement. The fragments are collected in
-// an array and joined once, rather than concatenated inside the loop.
+# Inserts a batch of closure rows as one multi-row statement. The fragments are collected in an array and joined once, rather than concatenated inside the loop.
+#
+# + rows - The closure rows to insert
+# + codeSystemId - The database id of the CodeSystem the closure rows belong to
+# + return - The number of rows inserted, or a `FHIRError` if the insert fails
 isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns int|r4:FHIRError {
     if rows.length() == 0 {
         return 0;
@@ -308,10 +325,12 @@ isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns
     return rows.length();
 }
 
-// Writes one row per active non-is-a Relationship (clinical attributes like
-// Finding site, Associated morphology). Rows whose source or destination isn't
-// in the imported concept set (e.g. destination outside a partial import) are
-// skipped, same as writeClosure skips ancestors outside the imported set.
+# Writes one row per active non-is-a Relationship (clinical attributes like Finding site, Associated morphology). Rows whose source or destination isn't in the imported concept set (e.g. destination outside a partial import) are skipped, same as writeClosure skips ancestors outside the imported set.
+#
+# + attributeRelationships - The non-is-a attribute relationships parsed from the release
+# + dbIdByCode - The database id assigned to each already-inserted concept code
+# + codeSystemId - The database id of the CodeSystem the relationship rows belong to
+# + return - The number of relationship rows written, or a `FHIRError` if a batch insert fails
 isolated function writeRelationships(snomed:SnomedAttributeRelationship[] attributeRelationships, map<int> dbIdByCode, int codeSystemId) returns int|r4:FHIRError {
     int written = 0;
     RelationshipRow[] batch = [];
@@ -344,6 +363,11 @@ isolated function writeRelationships(snomed:SnomedAttributeRelationship[] attrib
     return written;
 }
 
+# Inserts a batch of attribute relationship rows as one multi-row statement.
+#
+# + rows - The relationship rows to insert
+# + codeSystemId - The database id of the CodeSystem the relationship rows belong to
+# + return - The number of rows inserted, or a `FHIRError` if the insert fails
 isolated function flushRelationshipBatch(RelationshipRow[] rows, int codeSystemId) returns int|r4:FHIRError {
     if rows.length() == 0 {
         return 0;
@@ -374,8 +398,11 @@ isolated function flushRelationshipBatch(RelationshipRow[] rows, int codeSystemI
     return rows.length();
 }
 
-// Runs the import in the background so the upload request can return right
-// away, and removes the temp directory once the worker is done with it.
+# Runs the import in the background so the upload request can return right away, and removes the temp directory once the worker is done with it.
+#
+# + extractedPath - The path of the extracted RF2 release directory to import
+# + version - The version to record for the imported CodeSystem, if given
+# + tempDir - The temporary directory to remove once the import finishes
 public isolated function runSnomedImportAsync(string extractedPath, string? version, string tempDir) returns () {
     log:printInfo("SNOMED import worker started: extractedPath=" + extractedPath);
     snomed:SnomedImportSummary|r4:FHIRError result = importSnomedToDb(extractedPath, version);
@@ -390,6 +417,10 @@ public isolated function runSnomedImportAsync(string extractedPath, string? vers
     }
 }
 
+# Inserts a batch of concepts and returns their generated database ids.
+#
+# + batch - The concept rows to insert
+# + return - The generated database ids, in the same order as `batch`, or a `FHIRError` if the insert fails
 isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[]|r4:FHIRError {
     int[]|persist:Error result = sClient->/concepts.post(batch);
     if result is persist:Error {
@@ -403,8 +434,11 @@ isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[
     return result;
 }
 
-// Maps each concept code to its generated database id. Relies on the insert
-// returning ids in the same order as the records that were sent.
+# Maps each concept code to its generated database id. Relies on the insert returning ids in the same order as the records that were sent.
+#
+# + dbIdByCode - The map to populate with code -> database id entries
+# + codes - The concept codes sent in the batch, in insert order
+# + ids - The database ids returned by the insert, in the same order as `codes`
 isolated function recordInsertedIds(map<int> dbIdByCode, string[] codes, int[] ids) {
     int count = codes.length() < ids.length() ? codes.length() : ids.length();
     if codes.length() != ids.length() {

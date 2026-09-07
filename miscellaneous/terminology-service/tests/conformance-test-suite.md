@@ -70,7 +70,7 @@ These resources are loaded from the HL7 Terminology Ecosystem test package.
 ### Windows — PowerShell
 
 ```powershell
-$T = "$env:USERPROFILE\.fhir\packages\hl7.fhir.uv.tx-ecosystem#current\package\tests"
+$T = "$env:USERPROFILE\.fhir\packages\hl7.fhir.uv.tx-ecosystem#1.9.3\package\tests"
 
 curl.exe -X POST "http://localhost:9090/fhir/r4/CodeSystem" `
   -H "Content-Type: application/fhir+json" `
@@ -86,7 +86,7 @@ foreach ($f in "valueset-all","valueset-active","valueset-inactive","valueset-en
 ### Linux / macOS — Bash
 
 ```bash
-T="$HOME/.fhir/packages/hl7.fhir.uv.tx-ecosystem#current/package/tests"
+T="$HOME/.fhir/packages/hl7.fhir.uv.tx-ecosystem#1.9.3/package/tests"
 
 curl -X POST "http://localhost:9090/fhir/r4/CodeSystem" \
   -H "Content-Type: application/fhir+json" \

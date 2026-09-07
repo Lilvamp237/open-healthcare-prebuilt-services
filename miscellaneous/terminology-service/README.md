@@ -110,7 +110,7 @@ Ensure you have [Ballerina](https://ballerina.io/downloads/) installed. Then run
 bal run service.bal
 ```
 
-The service will start on port `9089` by default.
+The service will start on port `9090` by default.
 
 ## Project Structure
 
@@ -152,6 +152,12 @@ user = "database user name"
 password = "database password"
 port = 5432
 ```
+
+## Conformance Test Suite
+
+This service targets conformance with the HL7 FHIR Terminology Ecosystem IG's
+test suite. See [tests/conformance-test-suite.md](tests/conformance-test-suite.md)
+for how to point the suite at a running instance of this service and run it.
 
 ## References
 

@@ -61,9 +61,11 @@ public isolated function convert(string filePath, string? version) returns error
     string? partFileDir = check findDirNamed(filePath, "PartFile");
     if partFileDir is string {
         string primaryPartLinkPath = partFileDir + "/LoincPartLink_Primary.csv";
+        string supplementaryPartLinkPath = partFileDir + "/LoincPartLink_Supplementary.csv";
         boolean primaryExists = check file:test(primaryPartLinkPath, file:EXISTS);
-        if primaryExists {
-            partIndex = check buildLoincPartIndex(primaryPartLinkPath, partFileDir + "/LoincPartLink_Supplementary.csv");
+        boolean supplementaryExists = check file:test(supplementaryPartLinkPath, file:EXISTS);
+        if primaryExists && supplementaryExists {
+            partIndex = check buildLoincPartIndex(primaryPartLinkPath, supplementaryPartLinkPath);
         }
     }
 

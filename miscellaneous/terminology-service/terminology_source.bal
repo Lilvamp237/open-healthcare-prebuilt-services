@@ -409,6 +409,14 @@ public isolated class TerminologySource {
         r4:ValueSetExpansionContains[] allConcepts = [];
         string? filter = searchParameters.hasKey(terminology:FILTER) ? searchParameters.get(terminology:FILTER)[0].value : ();
 
+        // De-dupes concepts contributed by multiple includes/filters on the same
+        // CodeSystem (e.g. an unfiltered include plus a filtered include on the
+        // same system). Keyed by internal codeSystemId rather than
+        // ValueSetExpansionContains.system, since entries pushed below don't
+        // carry a system - two different CodeSystems that happen to share a
+        // code string must NOT collapse into one.
+        map<boolean> seenConceptKeys = {};
+
         foreach store_h2:ValueSetComposeInclude include in includes {
             // If conceptFlag, get concepts from valueset_compose_include_concepts
             if include.conceptFlag {
@@ -430,6 +438,11 @@ public isolated class TerminologySource {
                                 continue;
                             }
                         }
+                        string dedupeKey = (include.codeSystemId is int ? (<int>include.codeSystemId).toString() : "") + "|" + concept.code;
+                        if seenConceptKeys.hasKey(dedupeKey) {
+                            continue;
+                        }
+                        seenConceptKeys[dedupeKey] = true;
                         r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id};
                         allConcepts.push(exp);
                     }
@@ -452,6 +465,11 @@ public isolated class TerminologySource {
                                 continue;
                             }
                         }
+                        string dedupeKey = (include.codeSystemId is int ? (<int>include.codeSystemId).toString() : "") + "|" + concept.code;
+                        if seenConceptKeys.hasKey(dedupeKey) {
+                            continue;
+                        }
+                        seenConceptKeys[dedupeKey] = true;
                         r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id};
                         allConcepts.push(exp);
                     }
@@ -479,6 +497,15 @@ public isolated class TerminologySource {
                                 if expansionVal.contains is r4:ValueSetExpansionContains[] {
                                     r4:ValueSetExpansionContains[] containsArr = <r4:ValueSetExpansionContains[]>expansionVal.contains;
                                     foreach r4:ValueSetExpansionContains c in containsArr {
+                                        // Nested-ValueSet entries aren't tagged with a single
+                                        // codeSystemId, so namespace the key by the nested
+                                        // ValueSet's own id to avoid colliding with unrelated
+                                        // codeSystemId-keyed entries above.
+                                        string dedupeKey = "vs:" + v.valueSetId.toString() + "|" + (c.code ?: "");
+                                        if seenConceptKeys.hasKey(dedupeKey) {
+                                            continue;
+                                        }
+                                        seenConceptKeys[dedupeKey] = true;
                                         allConcepts.push(c);
                                     }
                                 }
@@ -525,12 +552,30 @@ public isolated class TerminologySource {
                                         members = filterConceptsByProperty(
                                                 filterCs.codeSystemId, f.property, f.value, filter, regexMatches);
                                     }
+                                    _ => {
+                                        // An unrecognized op, or is-a/descendent-of on a
+                                        // property other than "concept", would otherwise
+                                        // silently leave members empty - intersecting that in
+                                        // produces an under-inclusive expansion returned as a
+                                        // normal 200 instead of surfacing the unsupported filter.
+                                        return r4:createFHIRError(
+                                                string `Unsupported ValueSet compose filter: op=${f.op}, property=${f.property}`,
+                                                r4:ERROR,
+                                                r4:PROCESSING_NOT_SUPPORTED,
+                                                diagnostic = "Supported filters: is-a/descendent-of on property 'concept', '=' and 'regex' on any property.",
+                                                httpStatusCode = http:STATUS_BAD_REQUEST);
+                                    }
                                 }
                                 intersected = intersected is r4:ValueSetExpansionContains[]
                                     ? intersectByCode(intersected, members)
                                     : members;
                             }
                             foreach r4:ValueSetExpansionContains m in (intersected ?: []) {
+                                string dedupeKey = filterCs.codeSystemId.toString() + "|" + (m.code ?: "");
+                                if seenConceptKeys.hasKey(dedupeKey) {
+                                    continue;
+                                }
+                                seenConceptKeys[dedupeKey] = true;
                                 allConcepts.push(m);
                             }
                         }
@@ -612,9 +657,18 @@ public isolated class TerminologySource {
     # + count - The maximum number of concepts to return
     # + return - The matching concepts' details, or an `r4:FHIRError` if the query fails
     public isolated function searchConcept(DISPLAY|DEFINITION property, string filter, string? system, int offset, int count) returns terminology:CodeConceptDetails[]|r4:FHIRError {
+        // Filtered via a subquery on the concept's own FK column rather than a
+        // "c."-qualified join column: this whereClause is handed to the
+        // generated persist resource method, whose own join aliases aren't
+        // part of this function's contract (and "c." never matched any alias
+        // it actually generates, silently breaking system-filtered searches
+        // with a 500).
         sql:ParameterizedQuery whereClause = sql:queryConcat(
                 escapeToQuery(property), getRegexOperator(), stringToParameterizedQuery("'.*" + filter + ".*'"),
-                    system is () ? `` : sql:queryConcat(` AND c.`, escapeToQuery("url"), ` = ${system}`),
+                    system is () ? `` : sql:queryConcat(
+                        ` AND `, escapeToQuery("codesystemCodeSystemId"),
+                        ` IN (SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
+                        ` WHERE `, escapeToQuery("url"), ` = ${system})`),
                 getLimitClause(count, offset)
         );
 
@@ -807,6 +861,15 @@ isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r
             ` (`, escapeToQuery("name"), `, `, escapeToQuery("currentVersion"), `) VALUES (${name}, 0)`);
     psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(insertQuery);
     if result is persist:Error {
+        // name is unique (idx_closure_tables_name), so a concurrent create can make
+        // this INSERT fail on the constraint. Re-check for the row a concurrent
+        // caller may have just created before treating this as a real failure.
+        stream<ClosureTableRow, persist:Error?> concurrentStream = sClient->queryNativeSQL(selectQuery);
+        ClosureTableRow[]|error concurrentlyCreated = from ClosureTableRow row in concurrentStream
+            select row;
+        if concurrentlyCreated is ClosureTableRow[] && concurrentlyCreated.length() > 0 {
+            return concurrentlyCreated[0];
+        }
         return r4:createFHIRError(
                 "Error while creating closure table: " + result.message(),
                 r4:ERROR,
@@ -814,7 +877,17 @@ isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r
                 cause = result,
                 httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
-    int closureTableId = 0;
+
+    // Re-select by name rather than trusting lastInsertId's shape, which varies
+    // by driver (int vs numeric string).
+    stream<ClosureTableRow, persist:Error?> insertedStream = sClient->queryNativeSQL(selectQuery);
+    ClosureTableRow[]|error inserted = from ClosureTableRow row in insertedStream
+        select row;
+    if inserted is ClosureTableRow[] && inserted.length() > 0 {
+        return inserted[0];
+    }
+
+    int? closureTableId = ();
     string|int? lastInsertId = result.lastInsertId;
     if lastInsertId is int {
         closureTableId = lastInsertId;
@@ -823,6 +896,13 @@ isolated function getOrCreateClosureTable(string name) returns ClosureTableRow|r
         if parsedId is int {
             closureTableId = parsedId;
         }
+    }
+    if closureTableId is () {
+        return r4:createFHIRError(
+                "Could not resolve the generated closure table id",
+                r4:ERROR,
+                r4:PROCESSING,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
     return {closureTableId, name, currentVersion: 0};
 }
@@ -884,36 +964,32 @@ isolated function getAncestorConceptIds(int conceptId, int codeSystemId) returns
     return rows.map(r => r.ancestorConceptId);
 }
 
-# Restricts descendant lookup to a specific candidate set, rather than returning every descendant, since `$closure` only needs to report pairs involving concepts the client has actually added.
+# Restricts descendant lookup to the concepts already known to a closure table, rather than returning every descendant, since `$closure` only needs to report pairs involving concepts the client has actually added. Joins against `closure_table_concepts` instead of binding the candidate set as an `IN (...)` list, since that list can otherwise grow past a driver's bound-parameter limit (e.g. PostgreSQL's 65535) once enough concepts are registered to a closure table.
 #
 # + conceptId - Internal id of the concept whose descendants are looked up
 # + codeSystemId - Internal id of the CodeSystem the concept belongs to
-# + candidateIds - Concept ids to restrict the result to; typically the concepts already known to this closure table
-# + return - The subset of `candidateIds` that are descendants of `conceptId`, or an empty array if `candidateIds` is empty or the query fails
-isolated function getDescendantConceptIdsAmong(int conceptId, int codeSystemId, int[] candidateIds) returns int[] {
-    if candidateIds.length() == 0 {
-        return [];
-    }
-    sql:ParameterizedQuery[] idFragments = [];
-    boolean first = true;
-    foreach int id in candidateIds {
-        if !first {
-            idFragments.push(`, `);
-        }
-        idFragments.push(`${id}`);
-        first = false;
-    }
+# + closureTableId - Internal id of the closure table whose known concepts restrict the result
+# + return - The descendants of `conceptId` that are known to `closureTableId`, or an `r4:FHIRError` if the query fails
+isolated function getDescendantConceptIdsAmong(int conceptId, int codeSystemId, int closureTableId) returns int[]|r4:FHIRError {
     sql:ParameterizedQuery query = sql:queryConcat(
-            `SELECT `, escapeToQuery("descendantConceptId"), ` FROM `, escapeToQuery("concept_closure"),
-            ` WHERE `, escapeToQuery("ancestorConceptId"), ` = ${conceptId}`,
-            ` AND `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
-            ` AND `, escapeToQuery("depth"), ` >= 1`,
-            ` AND `, escapeToQuery("descendantConceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+            `SELECT cc.`, escapeToQuery("descendantConceptId"),
+            ` FROM `, escapeToQuery("concept_closure"), ` cc`,
+            ` JOIN `, escapeToQuery("closure_table_concepts"), ` ctc`,
+            ` ON ctc.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
+            ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${conceptId}`,
+            ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
+            ` AND cc.`, escapeToQuery("depth"), ` >= 1`,
+            ` AND ctc.`, escapeToQuery("closureTableId"), ` = ${closureTableId}`);
     stream<record {|int descendantConceptId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
     record {|int descendantConceptId;|}[]|error rows = from record {|int descendantConceptId;|} r in resultStream
         select r;
     if rows is error {
-        return [];
+        return r4:createFHIRError(
+                "Error while resolving closure table descendants: " + rows.message(),
+                r4:ERROR,
+                r4:PROCESSING,
+                cause = rows,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
     return rows.map(r => r.descendantConceptId);
 }
@@ -1001,27 +1077,39 @@ isolated function bumpClosureTableVersion(int closureTableId, int newVersion) re
     }
 }
 
-# Resolves a stored conceptId back to its code, display, and CodeSystem url. Needed to build the `$closure` response, since `closure_table_pairs` only stores internal conceptIds.
+# Resolves a batch of stored conceptIds back to their code, display, and CodeSystem url in a single query. Needed to build the `$closure` response, since `closure_table_pairs` only stores internal conceptIds.
 #
-# + conceptId - Internal id of the concept to resolve
-# + return - A `[code, display, systemUrl]` tuple, or an `error` if the concept can't be found
-isolated function getConceptRefById(int conceptId) returns [string, string?, string]|error {
-    sql:ParameterizedQuery conceptQuery = sql:queryConcat(
-            `SELECT * FROM `, escapeToQuery("concepts"), ` WHERE `, escapeToQuery("conceptId"), ` = ${conceptId}`);
-    store_h2:Concept|r4:FHIRError storeConcept = getStoreConcept(conceptQuery);
-    if storeConcept is r4:FHIRError {
-        return error(storeConcept.message());
+# + conceptIds - Internal ids of the concepts to resolve
+# + return - A map from conceptId (as string) to its `[code, display, systemUrl]` tuple; ids that couldn't be resolved are simply absent
+isolated function getConceptRefsByIds(int[] conceptIds) returns map<[string, string?, string]> {
+    map<[string, string?, string]> refsByConceptId = {};
+    if conceptIds.length() == 0 {
+        return refsByConceptId;
     }
-
-    sql:ParameterizedQuery csQuery = sql:queryConcat(
-            `SELECT `, escapeToQuery("url"), ` FROM `, escapeToQuery("codesystems"),
-            ` WHERE `, escapeToQuery("codeSystemId"), ` = ${storeConcept.codesystemCodeSystemId}`);
-    stream<record {|string url;|}, persist:Error?> csStream = sClient->queryNativeSQL(csQuery);
-    record {|string url;|}[]|error csRows = from record {|string url;|} r in csStream
+    sql:ParameterizedQuery[] idFragments = [];
+    boolean first = true;
+    foreach int id in conceptIds {
+        if !first {
+            idFragments.push(`, `);
+        }
+        idFragments.push(`${id}`);
+        first = false;
+    }
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT c.`, escapeToQuery("conceptId"), `, c.`, escapeToQuery("code"), `, c.`, escapeToQuery("display"), `, cs.`, escapeToQuery("url"),
+            ` FROM `, escapeToQuery("concepts"), ` c`,
+            ` JOIN `, escapeToQuery("codesystems"), ` cs ON c.`, escapeToQuery("codesystemCodeSystemId"), ` = cs.`, escapeToQuery("codeSystemId"),
+            ` WHERE c.`, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+    stream<record {|int conceptId; string code; string? display; string url;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {|int conceptId; string code; string? display; string url;|}[]|error rows = from var r in resultStream
         select r;
-    string systemUrl = (csRows is record {|string url;|}[] && csRows.length() > 0) ? csRows[0].url : "";
-
-    return [storeConcept.code, storeConcept.display, systemUrl];
+    if rows is error {
+        return refsByConceptId;
+    }
+    foreach var row in rows {
+        refsByConceptId[row.conceptId.toString()] = [row.code, row.display, row.url];
+    }
+    return refsByConceptId;
 }
 
 # Turns newly-discovered (and any resynced) subsumption pairs into a ConceptMap, one group per (descendant-system, ancestor-system) pair, with each element mapping a descendant code to its ancestor via a "subsumes" equivalence. Unmatched input concepts get their own element with an "unmatched" target, per the `$closure` spec.
@@ -1038,10 +1126,24 @@ isolated function buildClosureConceptMap(string name, int 'version, ClosureTable
     // relationships are ever added to concept_closure.
     map<r4:ConceptMapGroupElement[]> elementsBySystemPair = {};
 
+    map<boolean> seenConceptIds = {};
+    int[] distinctConceptIds = [];
     foreach ClosureTablePairRow pair in pairs {
-        [string, string?, string]|error descendantRef = getConceptRefById(pair.descendantConceptId);
-        [string, string?, string]|error ancestorRef = getConceptRefById(pair.ancestorConceptId);
-        if descendantRef is error || ancestorRef is error {
+        foreach int id in [pair.descendantConceptId, pair.ancestorConceptId] {
+            string idKey = id.toString();
+            if seenConceptIds.hasKey(idKey) {
+                continue;
+            }
+            seenConceptIds[idKey] = true;
+            distinctConceptIds.push(id);
+        }
+    }
+    map<[string, string?, string]> conceptRefsById = getConceptRefsByIds(distinctConceptIds);
+
+    foreach ClosureTablePairRow pair in pairs {
+        [string, string?, string]? descendantRef = conceptRefsById[pair.descendantConceptId.toString()];
+        [string, string?, string]? ancestorRef = conceptRefsById[pair.ancestorConceptId.toString()];
+        if descendantRef is () || ancestorRef is () {
             continue;
         }
         [string, string?, string] [descCode, descDisplay, descSystem] = descendantRef;
@@ -1138,33 +1240,44 @@ isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boo
 
     int[] frontier = [anchor.conceptId];
     while frontier.length() > 0 {
-        int[] nextFrontier = [];
+        // One query per level (parentConceptId IN (...frontier)) instead of
+        // one per node in the frontier - a wide hierarchy (many siblings at
+        // the same level) would otherwise add one DB round trip per node.
+        sql:ParameterizedQuery[] parentIdFragments = [];
+        boolean first = true;
         foreach int parentId in frontier {
-            sql:ParameterizedQuery query = sql:queryConcat(
-                    `SELECT * FROM `, escapeToQuery("concepts"),
-                    ` WHERE `, escapeToQuery("parentConceptId"), ` = ${parentId}`,
-                    ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
-            stream<store_h2:Concept, persist:Error?> childStream = sClient->queryNativeSQL(query);
-            store_h2:Concept[]|error children = from store_h2:Concept c in childStream
-                select c;
-            if children is error {
+            if !first {
+                parentIdFragments.push(`, `);
+            }
+            parentIdFragments.push(`${parentId}`);
+            first = false;
+        }
+        sql:ParameterizedQuery query = sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("parentConceptId"), ` IN (`, sql:queryConcat(...parentIdFragments), `)`,
+                ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+        stream<store_h2:Concept, persist:Error?> childStream = sClient->queryNativeSQL(query);
+        store_h2:Concept[]|error children = from store_h2:Concept c in childStream
+            select c;
+        if children is error {
+            break;
+        }
+
+        int[] nextFrontier = [];
+        foreach store_h2:Concept child in children {
+            nextFrontier.push(child.conceptId);
+
+            r4:CodeSystemConcept|error childConcept = byteToConcept(child.concept);
+            if childConcept is error {
                 continue;
             }
-            foreach store_h2:Concept child in children {
-                nextFrontier.push(child.conceptId);
-
-                r4:CodeSystemConcept|error childConcept = byteToConcept(child.concept);
-                if childConcept is error {
+            if textFilter is string {
+                if childConcept.display is string
+                    && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>childConcept.display).toUpperAscii()) {
                     continue;
                 }
-                if textFilter is string {
-                    if childConcept.display is string
-                        && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>childConcept.display).toUpperAscii()) {
-                        continue;
-                    }
-                }
-                members.push({code: childConcept.code, display: childConcept.display, id: childConcept.id});
             }
+            members.push({code: childConcept.code, display: childConcept.display, id: childConcept.id});
         }
         frontier = nextFrontier;
     }
@@ -1378,7 +1491,149 @@ isolated function isInParentChain(int targetAncestorId, ConceptNode currentNode)
     return false;
 }
 
-# Finds a concept by code within a ValueSet, searching its included concepts, included CodeSystems, and any nested ValueSets recursively.
+# Checks whether `code` is admitted by every filter on a `compose.include` (AND semantics, matching `expandValueSet`'s intensional-include handling). Unlike `expandValueSet`'s own filter evaluation - which needs the full member list to paginate/dedup across includes - this checks only the one code asked about, via a targeted lookup per filter instead of materializing and scanning every match. That matters at SNOMED scale: a broad `is-a` filter can match hundreds of thousands of concepts, and `$validate-code` only ever needs a yes/no answer for a single code.
+#
+# + codeSystemId - Internal id of the CodeSystem the filters apply against
+# + filters - The include's filters; `code` must pass all of them
+# + code - Code to test for membership
+# + return - `true` if `code` passes every filter, `false` otherwise (including on an unsupported op/property)
+isolated function isCodeAdmittedByComposeFilters(int codeSystemId, r4:ValueSetComposeIncludeFilter[] filters, string code) returns boolean {
+    foreach r4:ValueSetComposeIncludeFilter f in filters {
+        if !codeSatisfiesComposeFilter(codeSystemId, f, code) {
+            return false;
+        }
+    }
+    return true;
+}
+
+# Checks whether `code` alone satisfies a single `compose.include.filter`, via a targeted lookup rather than the full-list-then-scan approach `closureMembers`/`parentWalkDescendants`/`filterConceptsByProperty` use (those exist to build `$expand`'s member lists, where the full list is genuinely needed).
+#
+# + codeSystemId - Internal id of the CodeSystem the filter applies against
+# + f - The filter to evaluate
+# + code - Code to test
+# + return - `true` if `code` satisfies the filter, `false` otherwise (including on an unsupported op/property)
+isolated function codeSatisfiesComposeFilter(int codeSystemId, r4:ValueSetComposeIncludeFilter f, string code) returns boolean {
+    match f.op {
+        "is-a"|"descendent-of" if f.property == "concept" => {
+            return isConceptRelatedByClosure(codeSystemId, f.value, code, f.op == "is-a");
+        }
+        "=" => {
+            return conceptCodeMatchesProperty(codeSystemId, code, f.property, f.value, stringEquals);
+        }
+        "regex" => {
+            return conceptCodeMatchesProperty(codeSystemId, code, f.property, f.value, regexMatches);
+        }
+        _ => {
+            return false;
+        }
+    }
+}
+
+# Checks whether `code`'s concept is `anchorCode` itself (when `includeSelf`) or a descendant of it, via a targeted closure-table lookup where a closure exists, or a parent-link walk that stops as soon as `code` is found otherwise (unlike `parentWalkDescendants`, which collects every descendant before the caller can check membership).
+#
+# + codeSystemId - Internal id of the CodeSystem both codes belong to
+# + anchorCode - Code of the ancestor concept
+# + code - Code to test
+# + includeSelf - Whether `code == anchorCode` itself counts as a match (`is-a` semantics) or not (`descendent-of` semantics)
+# + return - `true` if `code` is related to `anchorCode` as described, `false` otherwise (including if either code can't be resolved)
+isolated function isConceptRelatedByClosure(int codeSystemId, string anchorCode, string code, boolean includeSelf) returns boolean {
+    store_h2:Concept|r4:FHIRError anchor = getStoreConceptByCode(codeSystemId, anchorCode);
+    if anchor is r4:FHIRError {
+        return false;
+    }
+    store_h2:Concept|r4:FHIRError target = getStoreConceptByCode(codeSystemId, code);
+    if target is r4:FHIRError {
+        return false;
+    }
+    if includeSelf && anchor.conceptId == target.conceptId {
+        return true;
+    }
+
+    if hasClosureRows(codeSystemId) {
+        sql:ParameterizedQuery query = sql:queryConcat(
+                `SELECT 1 FROM `, escapeToQuery("concept_closure"),
+                ` WHERE `, escapeToQuery("ancestorConceptId"), ` = ${anchor.conceptId}`,
+                ` AND `, escapeToQuery("descendantConceptId"), ` = ${target.conceptId}`,
+                ` AND `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
+                ` AND `, escapeToQuery("depth"), ` >= 1 LIMIT 1`);
+        stream<record {}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+        record {}[]|error rows = from record {} r in resultStream
+            select r;
+        return rows is record {}[] && rows.length() > 0;
+    }
+
+    // No closure table for this CodeSystem (e.g. LOINC) - walk down from the
+    // anchor via parentConceptId, level by level, stopping as soon as the
+    // target concept is found instead of collecting every descendant first.
+    int[] frontier = [anchor.conceptId];
+    map<boolean> visited = {};
+    while frontier.length() > 0 {
+        int[] nextFrontier = [];
+        foreach int parentId in frontier {
+            sql:ParameterizedQuery query = sql:queryConcat(
+                    `SELECT `, escapeToQuery("conceptId"), ` FROM `, escapeToQuery("concepts"),
+                    ` WHERE `, escapeToQuery("parentConceptId"), ` = ${parentId}`,
+                    ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
+            stream<record {|int conceptId;|}, persist:Error?> childStream = sClient->queryNativeSQL(query);
+            record {|int conceptId;|}[]|error children = from record {|int conceptId;|} r in childStream
+                select r;
+            if children is error {
+                continue;
+            }
+            foreach var child in children {
+                if child.conceptId == target.conceptId {
+                    return true;
+                }
+                string visitedKey = child.conceptId.toString();
+                if visited.hasKey(visitedKey) {
+                    continue;
+                }
+                visited[visitedKey] = true;
+                nextFrontier.push(child.conceptId);
+            }
+        }
+        frontier = nextFrontier;
+    }
+    return false;
+}
+
+# Checks whether `code`'s concept alone satisfies a `=`/`regex` property filter, by looking up just that one concept instead of loading and testing every concept in the CodeSystem (as `filterConceptsByProperty` does to build `$expand`'s member list).
+#
+# + codeSystemId - Internal id of the CodeSystem the concept belongs to
+# + code - Code to test
+# + property - The property code to match (or `"code"` to match the concept's own code)
+# + value - The value to compare the property against
+# + matcher - Comparator applied between the property's (or code's) value and `value`
+# + return - `true` if the concept's `property` value matches, `false` otherwise (including if `code` can't be resolved)
+isolated function conceptCodeMatchesProperty(int codeSystemId, string code, string property, string value,
+        isolated function (string actual, string target) returns boolean matcher) returns boolean {
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(codeSystemId, code);
+    if storeConcept is r4:FHIRError {
+        return false;
+    }
+    r4:CodeSystemConcept|error concept = byteToConcept(storeConcept.concept);
+    if concept is error {
+        return false;
+    }
+
+    if property == "code" {
+        return matcher(concept.code, value);
+    }
+    if concept.property is r4:CodeSystemConceptProperty[] {
+        foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
+            if prop.code != property {
+                continue;
+            }
+            string? propValue = propertyValueAsString(prop);
+            if propValue is string && matcher(propValue, value) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+# Finds a concept by code within a ValueSet, searching its included concepts, included CodeSystems, filtered whole-CodeSystem includes, and any nested ValueSets recursively.
 #
 # + system - Canonical URL of the ValueSet to search
 # + code - Code to look up
@@ -1435,6 +1690,39 @@ isolated function findConceptInValueSet(r4:uri system, r4:code code, string? ver
                 url: system,
                 concept: valueSetConcept
             };
+        }
+    }
+
+    // checks filtered whole-CodeSystem includes: saveValueSetComposeInclude
+    // deliberately skips writing a valueset_compose_includes row for these
+    // (membership depends on evaluating the filter, not a static join), so the
+    // two checks above never match a code from one. Evaluate the filter
+    // directly here instead, using the same per-operator logic $expand's
+    // intensional-include handling uses - otherwise a code the filter
+    // legitimately admits is reported as "not found".
+    r4:ValueSet|error storedVs = byteToValueSet(valueset.valueSet);
+    if storedVs is r4:ValueSet {
+        r4:ValueSetCompose? composeRules = storedVs.compose;
+        if composeRules is r4:ValueSetCompose {
+            foreach r4:ValueSetComposeInclude inc in composeRules.include {
+                r4:ValueSetComposeIncludeFilter[]? incFilters = inc.filter;
+                r4:uri? incSystem = inc.system;
+                if incFilters is r4:ValueSetComposeIncludeFilter[] && incFilters.length() > 0 && incSystem is r4:uri {
+                    store_h2:CodeSystem|error filterCs = getStoreCodeSystemByURL(incSystem, inc.'version);
+                    if filterCs is store_h2:CodeSystem && isCodeAdmittedByComposeFilters(filterCs.codeSystemId, incFilters, code) {
+                        store_h2:Concept|r4:FHIRError filteredConcept = getStoreConceptByCode(filterCs.codeSystemId, code);
+                        if filteredConcept is store_h2:Concept {
+                            r4:CodeSystemConcept|error parsedConcept = byteToConcept(filteredConcept.concept);
+                            if parsedConcept !is error {
+                                return {
+                                    url: system,
+                                    concept: parsedConcept
+                                };
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1800,7 +2088,7 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
     return [parents, children];
 }
 
-# Derives a concept's abstract/inactive flags from its stored properties. `abstract` is set when the concept has property notSelectable=true (or abstract=true); `inactive` is set when the concept has an explicit inactive=true property, or its status property is retired/deprecated.
+# Derives a concept's abstract/inactive flags from its stored properties. `abstract` is set when the concept has property notSelectable=true (or abstract=true); `inactive` is set when the concept has an explicit inactive=true property, an active=false property (as written by the SNOMED importer), or its status property is retired/deprecated.
 #
 # + system - Canonical URL of the CodeSystem the concept belongs to
 # + code - Code of the concept to look up
@@ -1829,6 +2117,9 @@ isolated function getConceptFlags(r4:uri system, r4:code code, string? version =
                 isAbstract = true;
             }
             if prop.code == "inactive" && prop.valueBoolean is boolean && <boolean>prop.valueBoolean {
+                isInactive = true;
+            }
+            if prop.code == "active" && prop.valueBoolean is boolean && !<boolean>prop.valueBoolean {
                 isInactive = true;
             }
             if prop.code == "status" && prop.valueCode is r4:code {
@@ -1880,32 +2171,117 @@ isolated function getConceptAttributeRelationships(r4:uri system, r4:code code, 
         return [];
     }
 
+    // Resolve every row's type code and destination concept in two bulk
+    // queries instead of two round trips per row - a concept with many
+    // attribute relationships (common in SNOMED) would otherwise turn one
+    // $lookup into 2N+ queries.
+    map<boolean> seenTypeIds = {};
+    string[] distinctTypeIds = [];
+    map<boolean> seenDestIds = {};
+    int[] distinctDestIds = [];
+    foreach ConceptRelationshipQueryRow row in rows {
+        if !seenTypeIds.hasKey(row.typeId) {
+            seenTypeIds[row.typeId] = true;
+            distinctTypeIds.push(row.typeId);
+        }
+        string destKey = row.destinationConceptId.toString();
+        if !seenDestIds.hasKey(destKey) {
+            seenDestIds[destKey] = true;
+            distinctDestIds.push(row.destinationConceptId);
+        }
+    }
+
+    map<string?> typeDisplayByCode = getConceptDisplaysByCode(csId, distinctTypeIds);
+    map<[string, string?]> destConceptById = getConceptCodeAndDisplayByIds(distinctDestIds);
+
     ConceptAttributeRelationship[] resolved = [];
     foreach ConceptRelationshipQueryRow row in rows {
-        string? typeDisplay = ();
-        store_h2:Concept|r4:FHIRError typeConcept = getStoreConceptByCode(csId, row.typeId);
-        if typeConcept is store_h2:Concept {
-            r4:CodeSystemConcept|error decoded = byteToConcept(typeConcept.concept);
-            if decoded is r4:CodeSystemConcept {
-                typeDisplay = decoded.display;
-            }
-        }
-
-        sql:ParameterizedQuery destQuery = sql:queryConcat(
-                `SELECT * FROM `, escapeToQuery("concepts"),
-                ` WHERE `, escapeToQuery("conceptId"), ` = ${row.destinationConceptId}`);
-        store_h2:Concept|r4:FHIRError destConcept = getStoreConcept(destQuery);
-        if destConcept is store_h2:Concept {
-            string? valueDisplay = ();
-            r4:CodeSystemConcept|error decoded = byteToConcept(destConcept.concept);
-            if decoded is r4:CodeSystemConcept {
-                valueDisplay = decoded.display;
-            }
-            resolved.push({typeCode: row.typeId, typeDisplay: typeDisplay, valueCode: destConcept.code, valueDisplay: valueDisplay});
+        [string, string?]? destConcept = destConceptById[row.destinationConceptId.toString()];
+        if destConcept is [string, string?] {
+            resolved.push({
+                typeCode: row.typeId,
+                typeDisplay: typeDisplayByCode[row.typeId],
+                valueCode: destConcept[0],
+                valueDisplay: destConcept[1]
+            });
         }
     }
 
     return resolved;
+}
+
+# Resolves a batch of concept codes (within one CodeSystem) to their display text in a single query.
+#
+# + codeSystemId - Internal id of the CodeSystem the codes belong to
+# + codes - Concept codes to resolve
+# + return - A map from code to display text; codes that couldn't be resolved (or decoded) are simply absent
+isolated function getConceptDisplaysByCode(int codeSystemId, string[] codes) returns map<string?> {
+    map<string?> displaysByCode = {};
+    if codes.length() == 0 {
+        return displaysByCode;
+    }
+    sql:ParameterizedQuery[] codeFragments = [];
+    boolean first = true;
+    foreach string code in codes {
+        if !first {
+            codeFragments.push(`, `);
+        }
+        codeFragments.push(`${code}`);
+        first = false;
+    }
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("concepts"),
+            ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`,
+            ` AND `, escapeToQuery("code"), ` IN (`, sql:queryConcat(...codeFragments), `)`);
+    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
+    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+        select c;
+    if dbConcepts is error {
+        return displaysByCode;
+    }
+    foreach store_h2:Concept dbConcept in dbConcepts {
+        r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
+        if decoded is r4:CodeSystemConcept {
+            displaysByCode[dbConcept.code] = decoded.display;
+        }
+    }
+    return displaysByCode;
+}
+
+# Resolves a batch of internal concept ids to their code and display text in a single query.
+#
+# + conceptIds - Internal ids of the concepts to resolve
+# + return - A map from conceptId (as string) to `[code, display]`; ids that couldn't be resolved (or decoded) are simply absent
+isolated function getConceptCodeAndDisplayByIds(int[] conceptIds) returns map<[string, string?]> {
+    map<[string, string?]> resultsById = {};
+    if conceptIds.length() == 0 {
+        return resultsById;
+    }
+    sql:ParameterizedQuery[] idFragments = [];
+    boolean first = true;
+    foreach int id in conceptIds {
+        if !first {
+            idFragments.push(`, `);
+        }
+        idFragments.push(`${id}`);
+        first = false;
+    }
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT * FROM `, escapeToQuery("concepts"),
+            ` WHERE `, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
+    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+        select c;
+    if dbConcepts is error {
+        return resultsById;
+    }
+    foreach store_h2:Concept dbConcept in dbConcepts {
+        r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
+        if decoded is r4:CodeSystemConcept {
+            resultsById[dbConcept.conceptId.toString()] = [dbConcept.code, decoded.display];
+        }
+    }
+    return resultsById;
 }
 
 # Runs a query for a single stored concept row and returns the first match.
@@ -2032,8 +2408,13 @@ isolated function extractConceptsFromCodeSystemRecursive(r4:CodeSystemConcept va
         if concepts != () && concepts.length() > 0 {
             int[] childPath = ancestorPath.clone();
             childPath.push(conceptDbId);
+            // Recurse in the current strand rather than spawning one per
+            // child (`start ...`): a deeply-nested or wide CodeSystem would
+            // otherwise spawn an unbounded number of concurrent workers, each
+            // holding a DB connection, exhausting the pool and starving
+            // concurrent $lookup/$expand requests.
             foreach var subConcept in concepts {
-                _ = start extractConceptsFromCodeSystemRecursive(subConcept.clone(), codeSystemId, conceptDbId, childPath.clone());
+                extractConceptsFromCodeSystemRecursive(subConcept.clone(), codeSystemId, conceptDbId, childPath.clone());
             }
         }
     }

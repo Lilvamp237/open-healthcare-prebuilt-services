@@ -357,9 +357,12 @@ public isolated function buildSnomedCodeSystemMetadata(string? version) returns 
         content: r4:CODE_CONTENT_FRAGMENT,
         caseSensitive: true,
         hierarchyMeaning: r4:CODE_HIERARCHYMEANING_IS_A,
-        publisher: SNOMED_PUBLISHER,
-        date: deriveSnomedDate(version)
+        publisher: SNOMED_PUBLISHER
     };
+    string derivedDate = deriveSnomedDate(version);
+    if derivedDate != "" {
+        codeSystem.date = derivedDate;
+    }
     if effectiveVersion != "" {
         codeSystem.version = SNOMED_SYSTEM_URL + "/" + SNOMED_CORE_MODULE_ID + "/version/" + effectiveVersion;
     }
@@ -419,9 +422,12 @@ public isolated function snomedConceptImportToR4(SnomedConceptImport item) retur
     r4:CodeSystemConceptProperty[] properties = [
         {code: "active", valueBoolean: item.active == "1"},
         {code: "module", valueCode: item.moduleId},
-        {code: "definitionStatusId", valueString: item.definitionStatusId},
-        {code: "effectiveTime", valueDateTime: deriveSnomedDate(item.effectiveTime)}
+        {code: "definitionStatusId", valueString: item.definitionStatusId}
     ];
+    string derivedEffectiveTime = deriveSnomedDate(item.effectiveTime);
+    if derivedEffectiveTime != "" {
+        properties.push({code: "effectiveTime", valueDateTime: derivedEffectiveTime});
+    }
 
     r4:CodeSystemConcept concept = {
         code: item.code,

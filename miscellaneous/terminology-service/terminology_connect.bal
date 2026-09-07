@@ -18,6 +18,7 @@ import terminology_service.loinc_to_fhir as loinc;
 import terminology_service.store_h2;
 
 import ballerina/http;
+import ballerina/lang.runtime;
 import ballerina/log;
 import ballerina/regex;
 import ballerina/time;
@@ -27,6 +28,56 @@ import ballerinax/health.fhir.r4.terminology;
 import ballerinax/health.fhir.r4.validator;
 
 final TerminologySource terminology_source = new TerminologySource();
+
+// Serializes ConceptMap/$closure requests per table name. closurePost reads a
+// closure table's currentVersion, computes newVersion = currentVersion + 1,
+// and only commits that inside its own transaction - so two concurrent calls
+// for the same table can both read the same currentVersion and race to
+// record pairs under the same newVersion, with the loser's recordClosurePair
+// failing on the unique pair index once the winner commits.
+// acquireClosureTableLock/releaseClosureTableLock below make a second call
+// for the same table name wait its turn instead of racing.
+isolated map<boolean> closureTableLocks = {};
+
+const decimal CLOSURE_LOCK_POLL_INTERVAL = 0.05;
+const int CLOSURE_LOCK_MAX_POLLS = 600; // ~30s at CLOSURE_LOCK_POLL_INTERVAL
+
+# Blocks (polling) until no other `$closure` call for `name` is in progress, then marks it as in progress. Different table names never block each other.
+#
+# + name - The closure table name to lock
+# + return - An `r4:FHIRError` if the lock could not be acquired within the retry budget, `()` once acquired
+isolated function acquireClosureTableLock(string name) returns r4:FHIRError? {
+    int polls = 0;
+    while polls < CLOSURE_LOCK_MAX_POLLS {
+        boolean acquired = false;
+        lock {
+            if !closureTableLocks.hasKey(name) {
+                closureTableLocks[name] = true;
+                acquired = true;
+            }
+        }
+        if acquired {
+            return;
+        }
+        runtime:sleep(CLOSURE_LOCK_POLL_INTERVAL);
+        polls += 1;
+    }
+    return r4:createFHIRError(
+            string `Timed out waiting for the $closure table "${name}" to become available`,
+            r4:ERROR,
+            r4:PROCESSING,
+            diagnostic = "Another $closure call for this table name is still in progress. Retry shortly.",
+            httpStatusCode = http:STATUS_SERVICE_UNAVAILABLE);
+}
+
+# Releases the per-table `$closure` lock acquired via `acquireClosureTableLock`. Must be called exactly once per successful acquisition, regardless of whether the call succeeded or failed.
+#
+# + name - The closure table name to unlock
+isolated function releaseClosureTableLock(string name) {
+    lock {
+        _ = closureTableLocks.removeIfHasKey(name);
+    }
+}
 
 # Reads a `CodeSystem` by id, optionally pinned to a version encoded as `id|version`.
 #
@@ -249,10 +300,9 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
     }
 
     // expansion.identifier just marks which expansion response this is - unlike
-    // the per-entry system/abstract/inactive back-fill and activeOnly filtering
-    // below, it doesn't depend on resolving a single uniform system across every
-    // compose.include, so it must be set unconditionally rather than after the
-    // csUrl-resolution early return further down.
+    // the per-entry system/abstract/inactive back-fill below, it doesn't depend
+    // on resolving a single uniform system across every compose.include, so it
+    // must be set unconditionally.
     if expansion.identifier is () {
         expansion.identifier = "urn:uuid:" + uuid:createType4AsString();
     }
@@ -278,28 +328,26 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         }
     }
 
-    if csUrl is () {
-        return mutable;
-    }
-
     r4:ValueSetExpansionContains[]? contains = expansion.contains;
     if contains is () {
         return mutable;
     }
 
-    foreach int i in 0 ..< contains.length() {
-        if contains[i].system is () {
-            contains[i].system = <r4:uri>csUrl;
-        }
-
-        r4:code? entryCode = contains[i].code;
-        if entryCode is r4:code {
-            [boolean, boolean] flags = getConceptFlags(<r4:uri>csUrl, entryCode);
-            if flags[0] {
-                contains[i].'abstract = true;
+    if csUrl is string {
+        foreach int i in 0 ..< contains.length() {
+            if contains[i].system is () {
+                contains[i].system = <r4:uri>csUrl;
             }
-            if flags[1] {
-                contains[i].inactive = true;
+
+            r4:code? entryCode = contains[i].code;
+            if entryCode is r4:code {
+                [boolean, boolean] flags = getConceptFlags(<r4:uri>csUrl, entryCode);
+                if flags[0] {
+                    contains[i].'abstract = true;
+                }
+                if flags[1] {
+                    contains[i].inactive = true;
+                }
             }
         }
     }
@@ -334,8 +382,12 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
 
     r4:ValueSetExpansionParameter[] expParams = [];
 
-    // Echo back the requested count if client sent one
-    r4:RequestSearchParameter[]? countParam = requestParams["count"];
+    // Echo back the requested count if client sent one - accepting both the
+    // bare and FHIR-standard "_"-prefixed spellings, since
+    // filterSupportedExpansionParams normalizes both for actual pagination
+    // but a client that only ever sent "_count" would otherwise never get it
+    // echoed back here.
+    r4:RequestSearchParameter[]? countParam = requestParams["count"] ?: requestParams["_count"];
     if countParam is r4:RequestSearchParameter[] && countParam.length() > 0 {
         int|error countVal = int:fromString(countParam[0].value);
         if countVal is int {
@@ -343,8 +395,8 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         }
     }
 
-    // Echo back the requested offset if client sent one
-    r4:RequestSearchParameter[]? offsetParam = requestParams["offset"];
+    // Echo back the requested offset if client sent one (see count, above)
+    r4:RequestSearchParameter[]? offsetParam = requestParams["offset"] ?: requestParams["_offset"];
     if offsetParam is r4:RequestSearchParameter[] && offsetParam.length() > 0 {
         int|error offsetVal = int:fromString(offsetParam[0].value);
         if offsetVal is int {
@@ -357,12 +409,14 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         expParams.push({name: "excludeNested", valueBoolean: excludeNestedParam[0].value == "true"});
     }
 
-    r4:CodeSystem|r4:FHIRError csForVersion = readCodeSystemByUrl(<string>csUrl);
-    if csForVersion is r4:CodeSystem {
-        string usedCs = csForVersion.version is string
-            ? <string>csUrl + "|" + <string>csForVersion.version
-            : <string>csUrl;
-        expParams.push({name: "used-codesystem", valueUri: usedCs});
+    if csUrl is string {
+        r4:CodeSystem|r4:FHIRError csForVersion = readCodeSystemByUrl(csUrl);
+        if csForVersion is r4:CodeSystem {
+            string usedCs = csForVersion.version is string
+                ? csUrl + "|" + <string>csForVersion.version
+                : csUrl;
+            expParams.push({name: "used-codesystem", valueUri: usedCs});
+        }
     }
 
     r4:RequestSearchParameter[]? displayLangParam = requestParams["displayLanguage"];
@@ -675,12 +729,18 @@ isolated function lookupInInlineValueSet(r4:Coding|r4:CodeableConcept codeValue,
     r4:CodeSystemConcept[] matches = [];
     foreach r4:Coding c in codingsToCheck {
         foreach r4:ValueSetExpansionContains entry in contains {
+            // Both entry.code and c.code are optional; entry.code is guarded
+            // as r4:code first so a coding with no code can never match a
+            // codeless expansion entry - () == () would otherwise be true,
+            // and casting () to r4:code below would panic.
+            r4:code? entryCode = entry.code;
             // expansion.contains entries only carry `system` when the include spans
             // multiple code systems (see postProcessExpansion, which back-fills it
             // for the single-system case after this call returns) - so only gate on
             // system when both sides actually have one to compare.
-            if entry.code == c.code && (entry.system is () || c.system is () || entry.system == c.system) {
-                matches.push({code: <r4:code>entry.code, display: entry.display});
+            if entryCode is r4:code && entryCode == c.code
+                    && (entry.system is () || c.system is () || entry.system == c.system) {
+                matches.push({code: entryCode, display: entry.display});
                 break;
             }
         }
@@ -1447,6 +1507,15 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
 
         // SNOMED
         else if typeHeader == SNOMED {
+            if !tryAcquireSnomedImportLock() {
+                _ = start removeDirectory(dirPath);
+                return r4:createFHIRError(
+                        "A SNOMED import is already in progress",
+                        r4:ERROR,
+                        r4:PROCESSING,
+                        diagnostic = "Only one SNOMED import may run at a time. Wait for the current import to finish (check server logs) before retrying.",
+                        httpStatusCode = http:STATUS_CONFLICT);
+            }
             string? version = payload.getQueryParamValue("snomed-version");
             _ = start runSnomedImportAsync(dirPath + ZIP_FILE_EXTRACTION_PATH, version, dirPath);
             log:printInfo("SNOMED import scheduled in background; check server logs for completion.");
@@ -1555,76 +1624,124 @@ public isolated function closurePost(http:Request request) returns r4:ConceptMap
     }
     string closureName = name;
 
-    ClosureTableRow tableRow = check getOrCreateClosureTable(closureName);
-    int[] knownConceptIds = getKnownConceptIds(tableRow.closureTableId);
+    // Serializes the whole read-modify-write below against other concurrent
+    // $closure calls for the same table name: newVersion is derived from
+    // tableRow.currentVersion read further down, and two concurrent calls for
+    // the same table reading the same currentVersion before either commits
+    // would otherwise race to record pairs under the same newVersion, with
+    // the loser's recordClosurePair failing on the unique pair index once the
+    // winner commits. acquireClosureTableLock makes a second call wait its
+    // turn instead of racing (a plain Ballerina `lock` block can't be used
+    // here: it forbids reading/writing any outer mutable variable - like
+    // `concepts` or the arrays built up below - declared outside the block).
+    check acquireClosureTableLock(closureName);
 
     // (ancestor, descendant) pairs newly discovered this call, plus any concepts
     // that couldn't be resolved.
     [int, int][] newPairs = [];
     UnmatchedClosureConcept[] unmatched = [];
+    ClosureTableRow tableRow;
+    int newVersion;
+    ClosureTablePairRow[] pairsToReturn = [];
 
-    foreach r4:Coding coding in concepts {
-        string? system = coding.system;
-        r4:code? code = coding.code;
-        if system is () || code is () {
-            unmatched.push({system: system, code: code ?: ""});
-            continue;
-        }
+    do {
+        tableRow = check getOrCreateClosureTable(closureName);
+        newVersion = tableRow.currentVersion + 1;
 
-        store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, coding.version);
-        if storeCs is error {
-            unmatched.push({system: system, code: code});
-            continue;
-        }
-        store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(storeCs.codeSystemId, code);
-        if storeConcept is r4:FHIRError {
-            unmatched.push({system: system, code: code});
-            continue;
-        }
+        // Registering a concept as "known" (addClosureTableConcept) has to happen
+        // before later concepts in this same call can be checked against it as a
+        // reverse-descendant candidate (getDescendantConceptIdsAmong reads
+        // closure_table_concepts), so the whole per-concept loop below - not just
+        // the final bump/record step - has to run inside one DB transaction.
+        // Otherwise a failure partway through (e.g. one concept's write fails, or
+        // a pair-write fails after the version was already bumped) leaves earlier
+        // writes committed: those concepts are "known" on retry, so their pairs
+        // are never recomputed and are silently lost. Rolling back the whole
+        // sequence together means a failed call leaves no partial state, so a
+        // retry starts from exactly where the last successful call left off.
+        transaction {
+            int[] knownConceptIds = getKnownConceptIds(tableRow.closureTableId);
 
-        int conceptId = storeConcept.conceptId;
-        if knownConceptIds.indexOf(conceptId) is int {
-            // Already added in an earlier call - nothing new to compute for it.
-            continue;
-        }
+            foreach r4:Coding coding in concepts {
+                string? system = coding.system;
+                r4:code? code = coding.code;
+                if system is () || code is () {
+                    unmatched.push({system: system, code: code ?: ""});
+                    continue;
+                }
 
-        // This concept's own ancestors (is-a chain), whether or not those
-        // ancestors were ever explicitly added by the client.
-        int[] ancestorIds = getAncestorConceptIds(conceptId, storeCs.codeSystemId);
-        foreach int ancestorId in ancestorIds {
-            newPairs.push([ancestorId, conceptId]);
-        }
+                store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, coding.version);
+                if storeCs is error {
+                    unmatched.push({system: system, code: code});
+                    continue;
+                }
+                store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(storeCs.codeSystemId, code);
+                if storeConcept is r4:FHIRError {
+                    unmatched.push({system: system, code: code});
+                    continue;
+                }
 
-        // The reverse direction: this newly-added concept might itself be an
-        // ancestor of a concept added in an earlier call, discovered only now.
-        if knownConceptIds.length() > 0 {
-            int[] descendantIds = getDescendantConceptIdsAmong(conceptId, storeCs.codeSystemId, knownConceptIds);
-            foreach int descendantId in descendantIds {
-                newPairs.push([conceptId, descendantId]);
+                int conceptId = storeConcept.conceptId;
+                if knownConceptIds.indexOf(conceptId) is int {
+                    // Already added in an earlier call - nothing new to compute for it.
+                    continue;
+                }
+
+                // This concept's own ancestors (is-a chain), whether or not those
+                // ancestors were ever explicitly added by the client.
+                int[] ancestorIds = getAncestorConceptIds(conceptId, storeCs.codeSystemId);
+                foreach int ancestorId in ancestorIds {
+                    newPairs.push([ancestorId, conceptId]);
+                }
+
+                // The reverse direction: this newly-added concept might itself be an
+                // ancestor of a concept added in an earlier call, discovered only now.
+                if knownConceptIds.length() > 0 {
+                    int[] descendantIds = check getDescendantConceptIdsAmong(conceptId, storeCs.codeSystemId, tableRow.closureTableId);
+                    foreach int descendantId in descendantIds {
+                        newPairs.push([conceptId, descendantId]);
+                    }
+                }
+
+                check addClosureTableConcept(tableRow.closureTableId, conceptId);
+                knownConceptIds.push(conceptId);
+            }
+
+            check bumpClosureTableVersion(tableRow.closureTableId, newVersion);
+
+            foreach [int, int] [ancestorId, descendantId] in newPairs {
+                boolean alreadyReported = isPairReported(tableRow.closureTableId, ancestorId, descendantId);
+                if !alreadyReported {
+                    check recordClosurePair(tableRow.closureTableId, ancestorId, descendantId, newVersion);
+                    pairsToReturn.push({
+                        closureTablePairId: 0,
+                        closureTableId: tableRow.closureTableId,
+                        ancestorConceptId: ancestorId,
+                        descendantConceptId: descendantId,
+                        reportedAtVersion: newVersion
+                    });
+                }
+            }
+
+            error? commitResult = commit;
+            if commitResult is error {
+                fail commitResult;
             }
         }
-
-        check addClosureTableConcept(tableRow.closureTableId, conceptId);
-        knownConceptIds.push(conceptId);
-    }
-
-    int newVersion = tableRow.currentVersion + 1;
-    check bumpClosureTableVersion(tableRow.closureTableId, newVersion);
-
-    ClosureTablePairRow[] pairsToReturn = [];
-    foreach [int, int] [ancestorId, descendantId] in newPairs {
-        boolean alreadyReported = isPairReported(tableRow.closureTableId, ancestorId, descendantId);
-        if !alreadyReported {
-            check recordClosurePair(tableRow.closureTableId, ancestorId, descendantId, newVersion);
-            pairsToReturn.push({
-                closureTablePairId: 0,
-                closureTableId: tableRow.closureTableId,
-                ancestorConceptId: ancestorId,
-                descendantConceptId: descendantId,
-                reportedAtVersion: newVersion
-            });
+    } on fail var e {
+        releaseClosureTableLock(closureName);
+        if e is r4:FHIRError {
+            return e;
         }
+        return r4:createFHIRError(
+                "Error committing closure table update: " + e.message(),
+                r4:ERROR,
+                r4:PROCESSING,
+                cause = e,
+                httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
+
+    releaseClosureTableLock(closureName);
 
     // Resync: also include everything reported after the version the client
     // last synced to, in addition to whatever this call just discovered.

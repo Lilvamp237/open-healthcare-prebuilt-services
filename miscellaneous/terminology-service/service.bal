@@ -327,7 +327,9 @@ service http:InterceptableService /fhir/r4/\$find\-code on baseListener {
 // on connect to discover which FHIR versions the server supports. The terminology
 // service did not expose it (returned 404 "Path not found: /$versions"), which the
 // validator logs as "Unable to interpret response from $versions". This endpoint
-// returns the standard Parameters response declaring FHIR R4 (4.0.1) support.
+// returns the standard Parameters response declaring FHIR R4 (4.0.1) support, and
+// supports both GET and POST so it can be referenced by the standard
+// http://hl7.org/fhir/OperationDefinition/CapabilityStatement-versions definition.
 service http:InterceptableService /fhir/r4/\$versions on baseListener {
 
     public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
@@ -335,21 +337,29 @@ service http:InterceptableService /fhir/r4/\$versions on baseListener {
     }
 
     isolated resource function get .(http:RequestContext ctx, http:Request request) returns http:Response {
-        log:printDebug("FHIR Terminology request is received. Interaction: $versions");
-
-        http:Response response = new;
-        response.statusCode = http:STATUS_OK;
-        response.setHeader("content-type", "application/fhir+json");
-        json versions = {
-            "resourceType": "Parameters",
-            "parameter": [
-                {"name": "version", "valueCode": "4.0.1"},
-                {"name": "default", "valueCode": "4.0.1"}
-            ]
-        };
-        response.setJsonPayload(versions);
-        return response;
+        return buildVersionsResponse();
     }
+
+    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response {
+        return buildVersionsResponse();
+    }
+}
+
+isolated function buildVersionsResponse() returns http:Response {
+    log:printDebug("FHIR Terminology request is received. Interaction: $versions");
+
+    http:Response response = new;
+    response.statusCode = http:STATUS_OK;
+    response.setHeader("content-type", "application/fhir+json");
+    json versions = {
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "version", "valueCode": "4.0"},
+            {"name": "default", "valueCode": "4.0"}
+        ]
+    };
+    response.setJsonPayload(versions);
+    return response;
 }
 
 // ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html)
@@ -535,12 +545,25 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                                     {name: "expand", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-expand"},
                                     {name: "validate-code", definition: "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code"}
                                 ]
+                            },
+                            {
+                                'type: "ConceptMap",
+                                interaction: [
+                                    {code: "read"},
+                                    {code: "search-type"},
+                                    {code: "create"}
+                                ],
+                                operation: [
+                                    {name: "translate", definition: "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate"}
+                                ]
                             }
                         ],
                         // $versions is implemented (see the /$versions listener below) but
                         // wasn't declared here - a base-level (not resource-scoped) operation.
+                        // $closure is likewise a base-level operation (see the /$closure listener below).
                         operation: [
-                            {name: "versions", definition: "https://github.com/wso2/open-healthcare-prebuilt-services/tree/main/miscellaneous/terminology-service#versions"}
+                            {name: "versions", definition: "http://hl7.org/fhir/OperationDefinition/CapabilityStatement-versions"},
+                            {name: "closure", definition: "http://hl7.org/fhir/OperationDefinition/ConceptMap-closure"}
                         ]
                     }
                 ]

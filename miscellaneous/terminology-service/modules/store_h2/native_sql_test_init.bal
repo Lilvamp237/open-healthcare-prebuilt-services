@@ -83,6 +83,13 @@ CREATE TABLE "conceptmaps" (
 	"conceptMap" BLOB NOT NULL,
 	PRIMARY KEY("conceptMapId")
 );`);
+    // These unique indexes exist on the real dev/prod schema (script.sql) but
+    // were missing here, so tests couldn't exercise the constraints they
+    // enforce (e.g. closureTransactionRollsBackOnFailure in tests/closure_test.bal).
+    _ = check testClient->executeNativeSQL(`CREATE UNIQUE INDEX "idx_closure_tables_name" ON "closure_tables"("name")`);
+    _ = check testClient->executeNativeSQL(`CREATE UNIQUE INDEX "idx_closure_table_concepts_unique" ON "closure_table_concepts"("closureTableId", "conceptId")`);
+    _ = check testClient->executeNativeSQL(`CREATE UNIQUE INDEX "idx_closure_table_pairs_unique" ON "closure_table_pairs"("closureTableId", "ancestorConceptId", "descendantConceptId")`);
+    _ = check testClient->executeNativeSQL(`CREATE UNIQUE INDEX "idx_conceptmaps_url_version" ON "conceptmaps"("url", "version")`);
     check testClient.close();
 }
 

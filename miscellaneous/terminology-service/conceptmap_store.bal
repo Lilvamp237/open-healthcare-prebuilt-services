@@ -68,6 +68,22 @@ isolated function storeConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError
             `${conceptMapTargetUri(conceptMap)}, ${bytes})`);
     psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
     if result is persist:Error {
+        // terminology:addConceptMap checks (url, version) for an existing entry
+        // before calling this function, but that check-then-insert isn't atomic.
+        // idx_conceptmaps_url_version (unique) closes the race: a concurrent
+        // duplicate create trips the constraint here instead of silently
+        // inserting a second row, so it's reported the same way as the
+        // pre-check duplicate rather than as a generic 500.
+        if isUniqueConstraintViolation(result) {
+            return r4:createFHIRError(
+                    "Duplicate entry",
+                    r4:ERROR,
+                    r4:PROCESSING_DUPLICATE,
+                    diagnostic = string `Already there is a ConceptMap exists in the registry with the URL: ${conceptMap.url.toString()} and version: ${conceptMap.'version.toString()}`,
+                    errorType = r4:PROCESSING_ERROR,
+                    cause = result,
+                    httpStatusCode = http:STATUS_BAD_REQUEST);
+        }
         return r4:createFHIRError(
                 "Error while adding ConceptMap, " + result.message(),
                 r4:ERROR,
@@ -75,6 +91,15 @@ isolated function storeConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError
                 cause = result,
                 httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
     }
+}
+
+# Detects whether a `persist:Error` from an INSERT was caused by a unique-index/constraint violation, so callers can distinguish it from other DB failures. Matched by message substring since the SQL error code isn't surfaced through `persist:Error`, covering both the H2 ("Unique index or primary key violation") and PostgreSQL ("duplicate key value violates unique constraint") wording.
+#
+# + err - The error returned by `executeNativeSQL`
+# + return - `true` if the error looks like a unique-constraint violation
+isolated function isUniqueConstraintViolation(persist:Error err) returns boolean {
+    string message = err.message().toLowerAscii();
+    return message.includes("unique") || message.includes("duplicate");
 }
 
 # Finds candidate ConceptMaps for a given source (and optionally target) ValueSet scope, backing `TerminologySource.findConceptMaps`. The terminology library's translate() uses this to narrow candidates before performing the actual code matching itself.
@@ -109,8 +134,13 @@ isolated function getStoredConceptMapByUrl(r4:uri url, string? conceptMapVersion
                 `SELECT * FROM `, escapeToQuery("conceptmaps"),
                 ` WHERE `, escapeToQuery("url"), ` = ${url} AND `, escapeToQuery("version"), ` = ${conceptMapVersion}`);
     } else {
+        // Several versions of the same ConceptMap can be stored; without an
+        // explicit version, resolve deterministically to the latest one -
+        // matching getStoreCodeSystemByURL/getStoreValueSetByURL's own
+        // versionless handling - rather than whatever row the DB returns first.
         query = sql:queryConcat(
-                `SELECT * FROM `, escapeToQuery("conceptmaps"), ` WHERE `, escapeToQuery("url"), ` = ${url}`);
+                `SELECT * FROM `, escapeToQuery("conceptmaps"), ` WHERE `, escapeToQuery("url"), ` = ${url}`,
+                ` ORDER BY `, escapeToQuery("version"), ` DESC LIMIT 1`);
     }
     r4:ConceptMap[]|r4:FHIRError results = queryStoredConceptMaps(query);
     if results is r4:FHIRError {

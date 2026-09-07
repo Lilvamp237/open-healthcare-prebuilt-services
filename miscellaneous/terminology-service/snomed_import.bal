@@ -28,6 +28,31 @@ const int SNOMED_INSERT_BATCH_SIZE = 1000;
 
 const int SNOMED_CLOSURE_PROGRESS_INTERVAL = 100000;
 
+// Guards against two SNOMED imports running concurrently. Only one SNOMED import may be in flight at a
+// time; the upload endpoint checks this before starting a background worker
+// and rejects a second concurrent upload instead of racing it.
+isolated boolean snomedImportInProgress = false;
+
+# Attempts to acquire the single-flight SNOMED import guard.
+#
+# + return - `true` if the caller may proceed with an import (the guard is now held); `false` if another import is already in progress
+public isolated function tryAcquireSnomedImportLock() returns boolean {
+    lock {
+        if snomedImportInProgress {
+            return false;
+        }
+        snomedImportInProgress = true;
+        return true;
+    }
+}
+
+# Releases the single-flight SNOMED import guard acquired via `tryAcquireSnomedImportLock`. Must be called exactly once per successful acquisition, regardless of whether the import succeeded or failed.
+public isolated function releaseSnomedImportLock() {
+    lock {
+        snomedImportInProgress = false;
+    }
+}
+
 type ClosureRow record {|
     int ancestor;
     int descendant;
@@ -406,6 +431,9 @@ isolated function flushRelationshipBatch(RelationshipRow[] rows, int codeSystemI
 public isolated function runSnomedImportAsync(string extractedPath, string? version, string tempDir) returns () {
     log:printInfo("SNOMED import worker started: extractedPath=" + extractedPath);
     snomed:SnomedImportSummary|r4:FHIRError result = importSnomedToDb(extractedPath, version);
+    // Release the single-flight guard as soon as the DB work is done - success
+    // or failure - so a queued upload isn't blocked by unrelated temp-dir cleanup.
+    releaseSnomedImportLock();
     if result is r4:FHIRError {
         log:printError("SNOMED import failed: " + result.message());
     } else {

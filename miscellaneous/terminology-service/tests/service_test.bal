@@ -1246,3 +1246,80 @@ public function getCapabilityStatementFromMetadata() returns error? {
     test:assertTrue(capabilityStatement is international401:CapabilityStatement, "CapabilityStatement should not be an error");
 }
 
+@test:Config {
+    dependsOn: [testAddValidCodeSystemJson],
+    groups: ["closure", "successful_scenario"]
+}
+public function closurePost1() returns error? {
+    r4:Parameters requestPayload = {
+        'parameter: [
+            {name: "name", valueString: "closure-happy-path"},
+            {name: "concept", valueCoding: {system: "urn:oid:2.16.840.1.113883.6.238", code: "2133-7"}},
+            {name: "concept", valueCoding: {system: "urn:oid:2.16.840.1.113883.6.238", code: "2135-2"}}
+        ]
+    };
+    http:Response response = check baseClient->post("/%24closure", requestPayload, {"Content-Type": FHIR_JSON});
+    test:assertEquals(response.statusCode, 200);
+
+    json actualJson = check response.getJsonPayload();
+    r4:ConceptMap actual = check actualJson.cloneWithType(r4:ConceptMap);
+    test:assertEquals(actual.resourceType, "ConceptMap");
+
+    // 2133-7 subsumes 2135-2 (confirmed by subsumeCodeSystem8), so $closure must
+    // report it as a (ancestor=2133-7, descendant=2135-2) subsumption pair.
+    r4:ConceptMapGroup[]? groups = actual.group;
+    test:assertTrue(groups is r4:ConceptMapGroup[] && groups.length() > 0, "Expected at least one ConceptMap group");
+    r4:ConceptMapGroup[] groupArr = <r4:ConceptMapGroup[]>groups;
+
+    boolean pairFound = false;
+    foreach r4:ConceptMapGroup g in groupArr {
+        foreach r4:ConceptMapGroupElement el in g.element {
+            if el.code == "2135-2" {
+                foreach r4:ConceptMapGroupElementTarget t in (el.target ?: []) {
+                    if t.code == "2133-7" && t.equivalence == "subsumes" {
+                        pairFound = true;
+                    }
+                }
+            }
+        }
+    }
+    test:assertTrue(pairFound, "Expected a subsumes pair from 2135-2 to its ancestor 2133-7");
+}
+
+# Verifies that a `$closure` write sequence rolls back as a unit.
+#
+# + return - An `error` if setup (resolving the test CodeSystem/concept) fails
+@test:Config {
+    groups: ["closure", "transactional"]
+}
+public function closureTransactionRollsBackOnFailure() returns error? {
+    string tableName = "closure-rollback-test";
+    ClosureTableRow tableRow = check getOrCreateClosureTable(tableName);
+
+    store_h2:CodeSystem storeCs = check getStoreCodeSystemByURL("http://hl7.org/fhir/account-status", ());
+    store_h2:Concept concept = check getStoreConceptByCode(storeCs.codeSystemId, "active");
+
+    error? txResult = registerConceptTwiceInOneTransaction(tableRow.closureTableId, concept.conceptId);
+    test:assertTrue(txResult is error, "Expected the forced duplicate insert to fail the transaction");
+
+    // If rollback worked, the FIRST insert (which, taken on its own, would have
+    // succeeded) must be gone too - not just the second, constraint-violating one.
+    int[] knownConceptIds = getKnownConceptIds(tableRow.closureTableId);
+    test:assertEquals(knownConceptIds.length(), 0,
+            "A failed closure transaction must not leave any partial writes committed");
+}
+
+isolated function registerConceptTwiceInOneTransaction(int closureTableId, int conceptId) returns error? {
+    transaction {
+        check addClosureTableConcept(closureTableId, conceptId);
+        // Same (closureTableId, conceptId) again - violates
+        // idx_closure_table_concepts_unique, forcing the transaction to fail
+        // after the first insert already succeeded on its own.
+        check addClosureTableConcept(closureTableId, conceptId);
+        error? commitResult = commit;
+        if commitResult is error {
+            return commitResult;
+        }
+    }
+}
+

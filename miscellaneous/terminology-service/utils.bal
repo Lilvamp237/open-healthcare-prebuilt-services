@@ -15,6 +15,8 @@
 // under the License.
 import ballerina/file;
 import ballerina/io;
+import ballerina/jballerina.java;
+import ballerina/lang.runtime;
 import ballerina/regex;
 import ballerina/time;
 import ballerinax/health.fhir.r4;
@@ -140,7 +142,7 @@ isolated function prepareRequestSearchParameter(map<string[]> params) returns ma
 # + modifier - The search parameter modifier
 # + return - The constructed `RequestSearchParameter`
 isolated function createRequestSearchParameter(string name, string value, r4:FHIRSearchParameterType? 'type = r4:STRING, r4:FHIRSearchParameterModifier? modifier = r4:MODIFIER_EXACT) returns r4:RequestSearchParameter {
-    return {name: name, value: value, 'type: r4:STRING, typedValue: {modifier: modifier}};
+    return {name: name, value: value, 'type: 'type ?: r4:STRING, typedValue: {modifier: modifier}};
 }
 
 # Converts a `CodeSystemConceptProperty` into a `$lookup`/`$validate-code` response `property` parameter, adding a human-readable description sub-part for known SNOMED module and LOINC CLASSTYPE codes.
@@ -243,14 +245,44 @@ isolated function extractZipFile(string dirPath) returns error? {
     check zip:extract(dirPath + ZIP_FILE_NAME, dirPath + ZIP_FILE_EXTRACTION_PATH);
 }
 
+// zip:extract (ballerinacentral/zip, backed by zip4j) never closes the
+// ZipFile handle it opens to read the archive, so on Windows the extracted
+// zip's own file stays locked - by the JVM's own still-open handle, not by
+// anything external - until that ZipFile object is garbage-collected and its
+// finalizer runs. An immediate `file:remove` of the containing directory can
+// therefore fail with "The process cannot access the file because it is
+// being used by another process" for a lot longer than a brief race; a
+// System.gc() nudge before each retry is what actually clears it. This is a
+// no-op on platforms that don't lock open files.
+const int REMOVE_DIRECTORY_MAX_ATTEMPTS = 8;
+const decimal REMOVE_DIRECTORY_RETRY_DELAY = 0.3;
+
+isolated function suggestGarbageCollection() = @java:Method {
+    'class: "java.lang.System",
+    name: "gc"
+} external;
+
 # Removes the given directory and all of its contents, if it exists.
 #
 # + dirPath - The path of the directory to remove
-# + return - An `error` if the removal fails, `()` otherwise
+# + return - An `error` if the removal still fails after retrying, `()` otherwise
 isolated function removeDirectory(string dirPath) returns error? {
-    if check file:test(dirPath, file:EXISTS) {
-        check file:remove(dirPath, file:RECURSIVE);
+    error? lastError = ();
+    foreach int attempt in 1 ... REMOVE_DIRECTORY_MAX_ATTEMPTS {
+        if !(check file:test(dirPath, file:EXISTS)) {
+            return;
+        }
+        error? removeResult = file:remove(dirPath, file:RECURSIVE);
+        if removeResult is () {
+            return;
+        }
+        lastError = removeResult;
+        if attempt < REMOVE_DIRECTORY_MAX_ATTEMPTS {
+            suggestGarbageCollection();
+            runtime:sleep(REMOVE_DIRECTORY_RETRY_DELAY);
+        }
     }
+    return lastError;
 }
 
 # Saves an incoming compressed payload stream to disk as a zip file, recreating the target directory first.
@@ -336,7 +368,15 @@ function init() returns error? {
 isolated function createExpandedValueSet(r4:ValueSet vs, r4:ValueSetExpansionContains[] concepts) returns r4:ValueSetExpansion {
     r4:ValueSetExpansionContains[] contains = [];
     foreach r4:ValueSetExpansionContains concept in concepts {
-        r4:ValueSetExpansionContains c = {code: concept.code, display: concept.display, id: concept.id};
+        r4:ValueSetExpansionContains c = {
+            code: concept.code,
+            display: concept.display,
+            id: concept.id,
+            system: concept.system,
+            'version: concept.'version,
+            'abstract: concept.'abstract,
+            inactive: concept.inactive
+        };
         contains.push(c);
     }
     r4:ValueSetExpansion expansion = {timestamp: time:utcToString(time:utcNow()), contains: contains};

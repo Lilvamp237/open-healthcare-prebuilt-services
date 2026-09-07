@@ -205,10 +205,14 @@ CREATE UNIQUE INDEX "idx_closure_table_concepts_unique" ON "closure_table_concep
 CREATE UNIQUE INDEX "idx_closure_table_pairs_unique" ON "closure_table_pairs"("closureTableId", "ancestorConceptId", "descendantConceptId");
 CREATE INDEX "idx_closure_table_pairs_version" ON "closure_table_pairs"("closureTableId", "reportedAtVersion");
 
--- $translate: findConceptMaps looks up by resource-level source/target scope
+-- $translate: findConceptMaps looks up by resource-level source/target scope.
+-- Unique on (url, version) so concurrent addConceptMap calls can't both pass
+-- terminology:addConceptMap's duplicate check and insert two rows for the
+-- same identity - storeConceptMap maps the resulting constraint violation to
+-- r4:PROCESSING_DUPLICATE.
 CREATE INDEX "idx_conceptmaps_id" ON "conceptmaps"("id");
 CREATE INDEX "idx_conceptmaps_url" ON "conceptmaps"("url");
-CREATE INDEX "idx_conceptmaps_url_version" ON "conceptmaps"("url", "version");
+CREATE UNIQUE INDEX "idx_conceptmaps_url_version" ON "conceptmaps"("url", "version");
 CREATE INDEX "idx_conceptmaps_source" ON "conceptmaps"("sourceUri");
 CREATE INDEX "idx_conceptmaps_source_target" ON "conceptmaps"("sourceUri", "targetUri");
 

@@ -1,0 +1,22 @@
+{
+  "resourceType": "ValueSet",
+  "id": "direct-plus-nested-account-status",
+  "url": "http://example.org/fhir/ValueSet/direct-plus-nested-account-status",
+  "name": "DirectPlusNestedAccountStatus",
+  "title": "Account Status, direct and via a nested ValueSet",
+  "status": "active",
+  "version": "1.0.0",
+  "description": "A ValueSet that includes the account-status CodeSystem directly, and again via a nested ValueSet that itself includes the same CodeSystem - used to confirm $expand de-duplicates a direct include against an overlapping nested include instead of returning each code twice.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://hl7.org/fhir/account-status"
+      },
+      {
+        "valueSet": [
+          "http://hl7.org/fhir/ValueSet/account-status"
+        ]
+      }
+    ]
+  }
+}

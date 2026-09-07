@@ -63,7 +63,7 @@ isolated function storeConceptMap(r4:ConceptMap conceptMap) returns r4:FHIRError
             ` (`, escapeToQuery("id"), `, `, escapeToQuery("url"), `, `, escapeToQuery("version"), `, `,
             escapeToQuery("name"), `, `, escapeToQuery("title"), `, `, escapeToQuery("status"), `, `,
             escapeToQuery("sourceUri"), `, `, escapeToQuery("targetUri"), `, `, escapeToQuery("conceptMap"), `)`,
-            ` VALUES (${conceptMap.id ?: ""}, ${conceptMap.url}, ${conceptMap.'version}, ${conceptMap.name}, `,
+            ` VALUES (${conceptMap.id ?: ""}, ${conceptMap.url}, ${conceptMap.'version ?: ""}, ${conceptMap.name}, `,
             `${conceptMap.title}, ${conceptMap.status}, ${conceptMapSourceUri(conceptMap)}, `,
             `${conceptMapTargetUri(conceptMap)}, ${bytes})`);
     psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);

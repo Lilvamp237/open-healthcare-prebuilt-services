@@ -16,6 +16,7 @@
 import terminology_service.store_h2;
 
 import ballerina/http;
+import ballerina/lang.runtime;
 import ballerina/test;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.international401;
@@ -712,6 +713,50 @@ public function expandValueSet9() returns error? {
     test:assertTrue(assertValueSetExpansionsEqual(expected.expansion, actual.expansion), "ValueSet expansions are not equal");
 }
 
+@test:Config {
+    groups: ["valueset", "add_valueset", "successful_scenario"]
+}
+public function testAddValidValueSetDirectPlusNested() returns error? {
+    json requestPayload = returnValueSetData("add-valid-valueset-direct-plus-nested");
+
+    http:Response response = check vsClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
+
+    test:assertEquals(response.statusCode, 201);
+}
+
+// account-status is included both directly (compose.include.system) and via a
+// nested ValueSet (compose.include.valueSet) that itself includes the same
+// CodeSystem. $expand must de-duplicate the overlap by system+code rather
+// than treating the direct and nested contributions as unrelated (which
+// previously happened because nested-ValueSet entries were namespaced by the
+// nested ValueSet's own id instead of by CodeSystem).
+@test:Config {
+    dependsOn: [testAddValidValueSetDirectPlusNested],
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function expandValueSetDirectPlusNestedDedup() returns error? {
+    http:Response response = check vsClient->get("/$expand?url=http://example.org/fhir/ValueSet/direct-plus-nested-account-status", ());
+    json actualJson = check response.getJsonPayload();
+    r4:ValueSet actual = check actualJson.cloneWithType(r4:ValueSet);
+
+    r4:ValueSetExpansion expansion = <r4:ValueSetExpansion>actual.expansion;
+    r4:ValueSetExpansionContains[] contains = <r4:ValueSetExpansionContains[]>expansion.contains;
+
+    // account-status has 5 codes (active, on-hold, entered-in-error, unknown,
+    // inactive) - the direct include and the nested include both cover all of
+    // them, so a correctly-deduplicated expansion has exactly 5 entries, not 10.
+    test:assertEquals(expansion.total, 5, "Expected the direct and nested includes of the same CodeSystem to de-duplicate to 5 entries");
+    test:assertEquals(contains.length(), 5);
+
+    map<boolean> seenCodes = {};
+    foreach r4:ValueSetExpansionContains c in contains {
+        test:assertEquals(c.system, "http://hl7.org/fhir/account-status", "Expected every entry to carry the account-status system");
+        string code = <string>c.code;
+        test:assertFalse(seenCodes.hasKey(code), string `Duplicate code in expansion: ${code}`);
+        seenCodes[code] = true;
+    }
+}
+
 // A client-supplied offset should be echoed back on expansion.parameter, the
 // same way count already is - lets a client confirm which page it got back.
 @test:Config {
@@ -852,6 +897,30 @@ public function testAddValidCodeSystemJson() returns error? {
 
     // check the response status code is 201 or not
     test:assertEquals(response.statusCode, 201);
+
+    // addCodeSystem returns as soon as the CodeSystem row is inserted; concept
+    // and closure-row persistence happens in separate strands it doesn't wait
+    // on (see extractConceptsFromCodeSystem). Tests that depend on this one
+    // (subsumeCodeSystem8-12, closurePost1, ...) need that data to actually be
+    // queryable, not just "the POST returned" - so poll for one of the
+    // imported concepts (2133-7) before letting dependents proceed.
+    check waitForConceptSystemJsonImportReady();
+}
+
+# Polls `$lookup` for a concept from the `add-valid-codesystem` fixture until it succeeds, so tests that `dependsOn` `testAddValidCodeSystemJson` don't race its background concept/closure import.
+#
+# + return - An `error` if the concept still isn't queryable after the retry budget is exhausted
+function waitForConceptSystemJsonImportReady() returns error? {
+    int attempts = 0;
+    while attempts < 100 {
+        http:Response|http:ClientError response = csClient->get("/$lookup?system=urn:oid:2.16.840.1.113883.6.238&code=2133-7");
+        if response is http:Response && response.statusCode == 200 {
+            return;
+        }
+        runtime:sleep(0.05);
+        attempts += 1;
+    }
+    test:assertFail("Timed out waiting for the add-valid-codesystem import's concepts to become queryable");
 }
 
 // FHIR does not require CodeSystem.version - a CodeSystem with no version must

@@ -430,6 +430,7 @@ public isolated class TerminologySource {
                 if dbConcepts is error {
                     continue;
                 }
+                string? includeSystemUrl = include.codeSystemId is int ? getCodeSystemUrlById(<int>include.codeSystemId) : ();
                 foreach store_h2:Concept c in dbConcepts {
                     r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
                     if concept is r4:CodeSystemConcept {
@@ -438,12 +439,12 @@ public isolated class TerminologySource {
                                 continue;
                             }
                         }
-                        string dedupeKey = (include.codeSystemId is int ? (<int>include.codeSystemId).toString() : "") + "|" + concept.code;
+                        string dedupeKey = (includeSystemUrl ?: "") + "|" + concept.code;
                         if seenConceptKeys.hasKey(dedupeKey) {
                             continue;
                         }
                         seenConceptKeys[dedupeKey] = true;
-                        r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id};
+                        r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id, system: includeSystemUrl};
                         allConcepts.push(exp);
                     }
                 }
@@ -457,6 +458,7 @@ public isolated class TerminologySource {
                 if dbConcepts is error {
                     continue;
                 }
+                string? includeSystemUrl = getCodeSystemUrlById(<int>include.codeSystemId);
                 foreach store_h2:Concept c in dbConcepts {
                     r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
                     if concept is r4:CodeSystemConcept {
@@ -465,12 +467,12 @@ public isolated class TerminologySource {
                                 continue;
                             }
                         }
-                        string dedupeKey = (include.codeSystemId is int ? (<int>include.codeSystemId).toString() : "") + "|" + concept.code;
+                        string dedupeKey = (includeSystemUrl ?: "") + "|" + concept.code;
                         if seenConceptKeys.hasKey(dedupeKey) {
                             continue;
                         }
                         seenConceptKeys[dedupeKey] = true;
-                        r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id};
+                        r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id, system: includeSystemUrl};
                         allConcepts.push(exp);
                     }
                 }
@@ -497,11 +499,12 @@ public isolated class TerminologySource {
                                 if expansionVal.contains is r4:ValueSetExpansionContains[] {
                                     r4:ValueSetExpansionContains[] containsArr = <r4:ValueSetExpansionContains[]>expansionVal.contains;
                                     foreach r4:ValueSetExpansionContains c in containsArr {
-                                        // Nested-ValueSet entries aren't tagged with a single
-                                        // codeSystemId, so namespace the key by the nested
-                                        // ValueSet's own id to avoid colliding with unrelated
-                                        // codeSystemId-keyed entries above.
-                                        string dedupeKey = "vs:" + v.valueSetId.toString() + "|" + (c.code ?: "");
+                                        // Keyed by system+code, same as every other push site below -
+                                        // not by the nested ValueSet's own id - so a direct include and
+                                        // a nested include of the same CodeSystem/code correctly
+                                        // de-duplicate against each other instead of being treated as
+                                        // unrelated.
+                                        string dedupeKey = (c.system ?: "") + "|" + (c.code ?: "");
                                         if seenConceptKeys.hasKey(dedupeKey) {
                                             continue;
                                         }
@@ -571,11 +574,12 @@ public isolated class TerminologySource {
                                     : members;
                             }
                             foreach r4:ValueSetExpansionContains m in (intersected ?: []) {
-                                string dedupeKey = filterCs.codeSystemId.toString() + "|" + (m.code ?: "");
+                                string dedupeKey = filterCs.url + "|" + (m.code ?: "");
                                 if seenConceptKeys.hasKey(dedupeKey) {
                                     continue;
                                 }
                                 seenConceptKeys[dedupeKey] = true;
+                                m.system = filterCs.url;
                                 allConcepts.push(m);
                             }
                         }
@@ -1077,37 +1081,55 @@ isolated function bumpClosureTableVersion(int closureTableId, int newVersion) re
     }
 }
 
-# Resolves a batch of stored conceptIds back to their code, display, and CodeSystem url in a single query. Needed to build the `$closure` response, since `closure_table_pairs` only stores internal conceptIds.
+# Maximum number of values bound into a single `IN (...)` clause across the bulk
+# lookup helpers below. PostgreSQL caps a statement at 65535 bound parameters
+# total; chunking well under that (and under whatever a given driver/pool
+# tolerates) keeps a large $closure resync or bulk lookup from either failing
+# outright or - worse - silently resolving to nothing once a chunk's query
+# fails (see getConceptRefsByIds/getConceptDisplaysByCode/
+# getConceptCodeAndDisplayByIds).
+const int BULK_LOOKUP_CHUNK_SIZE = 1000;
+
+# Resolves a batch of stored conceptIds back to their code, display, and CodeSystem url, chunking the `IN (...)` clause so a large batch can't exceed a driver's bound-parameter limit. Needed to build the `$closure` response, since `closure_table_pairs` only stores internal conceptIds.
 #
 # + conceptIds - Internal ids of the concepts to resolve
-# + return - A map from conceptId (as string) to its `[code, display, systemUrl]` tuple; ids that couldn't be resolved are simply absent
-isolated function getConceptRefsByIds(int[] conceptIds) returns map<[string, string?, string]> {
+# + return - A map from conceptId (as string) to its `[code, display, systemUrl]` tuple (ids that couldn't be resolved are simply absent), or an `r4:FHIRError` if any chunk's query fails
+isolated function getConceptRefsByIds(int[] conceptIds) returns map<[string, string?, string]>|r4:FHIRError {
     map<[string, string?, string]> refsByConceptId = {};
-    if conceptIds.length() == 0 {
-        return refsByConceptId;
-    }
-    sql:ParameterizedQuery[] idFragments = [];
-    boolean first = true;
-    foreach int id in conceptIds {
-        if !first {
-            idFragments.push(`, `);
+    int offset = 0;
+    while offset < conceptIds.length() {
+        int chunkEnd = offset + BULK_LOOKUP_CHUNK_SIZE > conceptIds.length() ? conceptIds.length() : offset + BULK_LOOKUP_CHUNK_SIZE;
+        int[] chunk = conceptIds.slice(offset, chunkEnd);
+        offset = chunkEnd;
+
+        sql:ParameterizedQuery[] idFragments = [];
+        boolean first = true;
+        foreach int id in chunk {
+            if !first {
+                idFragments.push(`, `);
+            }
+            idFragments.push(`${id}`);
+            first = false;
         }
-        idFragments.push(`${id}`);
-        first = false;
-    }
-    sql:ParameterizedQuery query = sql:queryConcat(
-            `SELECT c.`, escapeToQuery("conceptId"), `, c.`, escapeToQuery("code"), `, c.`, escapeToQuery("display"), `, cs.`, escapeToQuery("url"),
-            ` FROM `, escapeToQuery("concepts"), ` c`,
-            ` JOIN `, escapeToQuery("codesystems"), ` cs ON c.`, escapeToQuery("codesystemCodeSystemId"), ` = cs.`, escapeToQuery("codeSystemId"),
-            ` WHERE c.`, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
-    stream<record {|int conceptId; string code; string? display; string url;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
-    record {|int conceptId; string code; string? display; string url;|}[]|error rows = from var r in resultStream
-        select r;
-    if rows is error {
-        return refsByConceptId;
-    }
-    foreach var row in rows {
-        refsByConceptId[row.conceptId.toString()] = [row.code, row.display, row.url];
+        sql:ParameterizedQuery query = sql:queryConcat(
+                `SELECT c.`, escapeToQuery("conceptId"), `, c.`, escapeToQuery("code"), `, c.`, escapeToQuery("display"), `, cs.`, escapeToQuery("url"),
+                ` FROM `, escapeToQuery("concepts"), ` c`,
+                ` JOIN `, escapeToQuery("codesystems"), ` cs ON c.`, escapeToQuery("codesystemCodeSystemId"), ` = cs.`, escapeToQuery("codeSystemId"),
+                ` WHERE c.`, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+        stream<record {|int conceptId; string code; string? display; string url;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+        record {|int conceptId; string code; string? display; string url;|}[]|error rows = from var r in resultStream
+            select r;
+        if rows is error {
+            return r4:createFHIRError(
+                    "Error while resolving concept references: " + rows.message(),
+                    r4:ERROR,
+                    r4:PROCESSING,
+                    cause = rows,
+                    httpStatusCode = http:STATUS_INTERNAL_SERVER_ERROR);
+        }
+        foreach var row in rows {
+            refsByConceptId[row.conceptId.toString()] = [row.code, row.display, row.url];
+        }
     }
     return refsByConceptId;
 }
@@ -1138,7 +1160,7 @@ isolated function buildClosureConceptMap(string name, int 'version, ClosureTable
             distinctConceptIds.push(id);
         }
     }
-    map<[string, string?, string]> conceptRefsById = getConceptRefsByIds(distinctConceptIds);
+    map<[string, string?, string]> conceptRefsById = check getConceptRefsByIds(distinctConceptIds);
 
     foreach ClosureTablePairRow pair in pairs {
         [string, string?, string]? descendantRef = conceptRefsById[pair.descendantConceptId.toString()];
@@ -1857,6 +1879,23 @@ isolated function getCodeSystemByURL(string system, string? version = ()) return
     return byteToCodeSystem(storeCodeSystem.codeSystem);
 }
 
+# Resolves a CodeSystem's internal id back to its canonical URL, so expansion entries pulled up by codeSystemId (rather than by a lookup that already had the URL in hand) can still be tagged with `system`.
+#
+# + codeSystemId - Internal id of the CodeSystem
+# + return - The CodeSystem's canonical URL, or `()` if it couldn't be resolved
+isolated function getCodeSystemUrlById(int codeSystemId) returns string? {
+    sql:ParameterizedQuery query = sql:queryConcat(
+            `SELECT `, escapeToQuery("url"), ` FROM `, escapeToQuery("codesystems"),
+            ` WHERE `, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`);
+    stream<record {|string url;|}, persist:Error?> resultStream = sClient->queryNativeSQL(query);
+    record {|string url;|}[]|error rows = from record {|string url;|} r in resultStream
+        select r;
+    if rows is error || rows.length() == 0 {
+        return ();
+    }
+    return rows[0].url;
+}
+
 # Retrieves the stored (undecoded) CodeSystem row by its canonical URL.
 #
 # + system - Canonical URL of the CodeSystem
@@ -2067,13 +2106,27 @@ isolated function getConceptHierarchy(r4:uri system, r4:code code, string? versi
         }
     }
 
-    // Children lookup — anyone whose parentConceptId points at us
+    // Children lookup — direct (depth=1) descendants from concept_closure where
+    // a closure exists, for the same reason the parent lookup above doesn't
+    // use parentConceptId: SNOMED never populates it (a concept there can have
+    // multiple is-a parents, so a single-parent FK can't represent it) - see
+    // snomed_import.bal, which always inserts parentConceptId: () for SNOMED
+    // concepts. Fall back to parentConceptId only for CodeSystems that have no
+    // closure rows (e.g. LOINC), where it's the only source of the hierarchy.
     r4:CodeSystemConcept[] children = [];
-    sql:ParameterizedQuery childQuery = sql:queryConcat(
-            `SELECT * FROM `, escapeToQuery("concepts"),
-            ` WHERE `, escapeToQuery("parentConceptId"), ` = ${myConceptId}`,
-            ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${csId}`,
-            ` ORDER BY `, escapeToQuery("code"));
+    sql:ParameterizedQuery childQuery = hasClosureRows(csId)
+        ? sql:queryConcat(
+                `SELECT c.* FROM `, escapeToQuery("concepts"), ` c JOIN `, escapeToQuery("concept_closure"), ` cc`,
+                ` ON c.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
+                ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${myConceptId}`,
+                ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${csId}`,
+                ` AND cc.`, escapeToQuery("depth"), ` = 1`,
+                ` ORDER BY c.`, escapeToQuery("code"))
+        : sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("parentConceptId"), ` = ${myConceptId}`,
+                ` AND `, escapeToQuery("codesystemCodeSystemId"), ` = ${csId}`,
+                ` ORDER BY `, escapeToQuery("code"));
     stream<store_h2:Concept, persist:Error?> childStream = sClient->queryNativeSQL(childQuery);
     store_h2:Concept[]|error childArr = streamToStoreConcept(childStream);
     if childArr is store_h2:Concept[] {
@@ -2210,75 +2263,83 @@ isolated function getConceptAttributeRelationships(r4:uri system, r4:code code, 
     return resolved;
 }
 
-# Resolves a batch of concept codes (within one CodeSystem) to their display text in a single query.
+# Resolves a batch of concept codes (within one CodeSystem) to their display text, chunking the `IN (...)` clause so a large batch can't exceed a driver's bound-parameter limit.
 #
 # + codeSystemId - Internal id of the CodeSystem the codes belong to
 # + codes - Concept codes to resolve
-# + return - A map from code to display text; codes that couldn't be resolved (or decoded) are simply absent
+# + return - A map from code to display text; codes that couldn't be resolved (or decoded), or a chunk whose query failed, are simply absent
 isolated function getConceptDisplaysByCode(int codeSystemId, string[] codes) returns map<string?> {
     map<string?> displaysByCode = {};
-    if codes.length() == 0 {
-        return displaysByCode;
-    }
-    sql:ParameterizedQuery[] codeFragments = [];
-    boolean first = true;
-    foreach string code in codes {
-        if !first {
-            codeFragments.push(`, `);
+    int offset = 0;
+    while offset < codes.length() {
+        int chunkEnd = offset + BULK_LOOKUP_CHUNK_SIZE > codes.length() ? codes.length() : offset + BULK_LOOKUP_CHUNK_SIZE;
+        string[] chunk = codes.slice(offset, chunkEnd);
+        offset = chunkEnd;
+
+        sql:ParameterizedQuery[] codeFragments = [];
+        boolean first = true;
+        foreach string code in chunk {
+            if !first {
+                codeFragments.push(`, `);
+            }
+            codeFragments.push(`${code}`);
+            first = false;
         }
-        codeFragments.push(`${code}`);
-        first = false;
-    }
-    sql:ParameterizedQuery query = sql:queryConcat(
-            `SELECT * FROM `, escapeToQuery("concepts"),
-            ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`,
-            ` AND `, escapeToQuery("code"), ` IN (`, sql:queryConcat(...codeFragments), `)`);
-    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
-    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-        select c;
-    if dbConcepts is error {
-        return displaysByCode;
-    }
-    foreach store_h2:Concept dbConcept in dbConcepts {
-        r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
-        if decoded is r4:CodeSystemConcept {
-            displaysByCode[dbConcept.code] = decoded.display;
+        sql:ParameterizedQuery query = sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`,
+                ` AND `, escapeToQuery("code"), ` IN (`, sql:queryConcat(...codeFragments), `)`);
+        stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
+        store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+            select c;
+        if dbConcepts is error {
+            continue;
+        }
+        foreach store_h2:Concept dbConcept in dbConcepts {
+            r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
+            if decoded is r4:CodeSystemConcept {
+                displaysByCode[dbConcept.code] = decoded.display;
+            }
         }
     }
     return displaysByCode;
 }
 
-# Resolves a batch of internal concept ids to their code and display text in a single query.
+# Resolves a batch of internal concept ids to their code and display text, chunking the `IN (...)` clause so a large batch can't exceed a driver's bound-parameter limit.
 #
 # + conceptIds - Internal ids of the concepts to resolve
-# + return - A map from conceptId (as string) to `[code, display]`; ids that couldn't be resolved (or decoded) are simply absent
+# + return - A map from conceptId (as string) to `[code, display]`; ids that couldn't be resolved (or decoded), or a chunk whose query failed, are simply absent
 isolated function getConceptCodeAndDisplayByIds(int[] conceptIds) returns map<[string, string?]> {
     map<[string, string?]> resultsById = {};
-    if conceptIds.length() == 0 {
-        return resultsById;
-    }
-    sql:ParameterizedQuery[] idFragments = [];
-    boolean first = true;
-    foreach int id in conceptIds {
-        if !first {
-            idFragments.push(`, `);
+    int offset = 0;
+    while offset < conceptIds.length() {
+        int chunkEnd = offset + BULK_LOOKUP_CHUNK_SIZE > conceptIds.length() ? conceptIds.length() : offset + BULK_LOOKUP_CHUNK_SIZE;
+        int[] chunk = conceptIds.slice(offset, chunkEnd);
+        offset = chunkEnd;
+
+        sql:ParameterizedQuery[] idFragments = [];
+        boolean first = true;
+        foreach int id in chunk {
+            if !first {
+                idFragments.push(`, `);
+            }
+            idFragments.push(`${id}`);
+            first = false;
         }
-        idFragments.push(`${id}`);
-        first = false;
-    }
-    sql:ParameterizedQuery query = sql:queryConcat(
-            `SELECT * FROM `, escapeToQuery("concepts"),
-            ` WHERE `, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
-    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
-    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-        select c;
-    if dbConcepts is error {
-        return resultsById;
-    }
-    foreach store_h2:Concept dbConcept in dbConcepts {
-        r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
-        if decoded is r4:CodeSystemConcept {
-            resultsById[dbConcept.conceptId.toString()] = [dbConcept.code, decoded.display];
+        sql:ParameterizedQuery query = sql:queryConcat(
+                `SELECT * FROM `, escapeToQuery("concepts"),
+                ` WHERE `, escapeToQuery("conceptId"), ` IN (`, sql:queryConcat(...idFragments), `)`);
+        stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
+        store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+            select c;
+        if dbConcepts is error {
+            continue;
+        }
+        foreach store_h2:Concept dbConcept in dbConcepts {
+            r4:CodeSystemConcept|error decoded = byteToConcept(dbConcept.concept);
+            if decoded is r4:CodeSystemConcept {
+                resultsById[dbConcept.conceptId.toString()] = [dbConcept.code, decoded.display];
+            }
         }
     }
     return resultsById;

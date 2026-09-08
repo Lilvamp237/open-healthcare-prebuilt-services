@@ -61,7 +61,17 @@ http://localhost:9090
 
 The `simple-cases` suite requires a small set of CodeSystem and ValueSet resources.
 
-These resources are loaded from the HL7 Terminology Ecosystem test package.
+These resources are loaded from the HL7 Terminology Ecosystem test package (`hl7.fhir.uv.tx-ecosystem#1.9.3`), cached locally under `~/.fhir/packages` (`%USERPROFILE%\.fhir\packages` on Windows).
+
+> **First time only:** If the HL7 Terminology Ecosystem package isn't cached yet, the `$T` paths below may point to files that don't exist. The validator downloads and caches the package automatically when you run Step 4 for the first time.
+>
+> **So, on the first run only:**
+>
+> 1. Skip to **Step 4** and run the command once. It's okay if the tests fail because the required fixtures haven't been loaded yet.
+> 2. Once the package has been downloaded and cached, return to **Step 3** and load the test fixtures.
+> 3. Then go back to **Step 4** and run the conformance suite again.
+>
+> On subsequent runs, you can start from **Step 3**.
 
 > **Important:** `POST /CodeSystem` and `POST /ValueSet` reject resources when a resource with the same `url` + `version` already exists (`400` response).
 >
@@ -88,6 +98,10 @@ for f in valueset-all valueset-active valueset-inactive valueset-enumerated valu
   curl -X POST "http://localhost:9090/fhir/r4/ValueSet" -H "Content-Type: application/fhir+json" --data-binary "@$T/simple/$f.json"
 done
 ```
+
+> **Known failure:** the `valueset-filter-child-of` POST above returns `400`. Its `compose.include.filter.op` value is `"child-of"`, which is an **R5-only** filter operator (added in R5's `filter-operator` ValueSet; R4 only has 9 operators, not the 11 in R5). This is expected and doesn't block the other 11 fixtures from loading. `simple-expand-child-of` will fail the same way (`400` instead of `2xx`) for the same reason - implementing `child-of` support is out of scope for this R4 service.
+>
+> **Also expected to fail:** `simple-expand-contained` also can't fully pass. Its expected response includes `expansion.contains[].property` - which is an **R5-only** field (`ValueSet.expansion.contains.property`, cardinality `0..*`, added in R5; it does not exist on the `ValueSet.expansion.contains` element in R4 4.0.1). `ballerinax/health.fhir.r4`'s `ValueSetExpansionContains` type has no `property` field.
 
 ---
 

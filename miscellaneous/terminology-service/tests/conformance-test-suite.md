@@ -72,14 +72,9 @@ These resources are loaded from the HL7 Terminology Ecosystem test package.
 ```powershell
 $T = "$env:USERPROFILE\.fhir\packages\hl7.fhir.uv.tx-ecosystem#1.9.3\package\tests"
 
-curl.exe -X POST "http://localhost:9090/fhir/r4/CodeSystem" `
-  -H "Content-Type: application/fhir+json" `
-  --data-binary "@$T\simple\codesystem-simple.json"
-
-foreach ($f in "valueset-all","valueset-active","valueset-inactive","valueset-enumerated","valueset-enumerated-bad","valueset-filter-isa","valueset-filter-property","valueset-filter-regex","valueset-filter-regex2","valueset-filter-regex-prop") {
-  curl.exe -X POST "http://localhost:9090/fhir/r4/ValueSet" `
-    -H "Content-Type: application/fhir+json" `
-    --data-binary "@$T\simple\$f.json"
+curl.exe -X POST "http://localhost:9090/fhir/r4/CodeSystem" -H "Content-Type: application/fhir+json" --data-binary "@$T\simple\codesystem-simple.json"
+foreach ($f in "valueset-all","valueset-active","valueset-inactive","valueset-enumerated","valueset-enumerated-bad","valueset-filter-isa","valueset-filter-child-of","valueset-filter-property","valueset-filter-regex","valueset-filter-regex2","valueset-filter-regex-prop") {
+  curl.exe -X POST "http://localhost:9090/fhir/r4/ValueSet" -H "Content-Type: application/fhir+json" --data-binary "@$T\simple\$f.json"
 }
 ```
 
@@ -88,14 +83,9 @@ foreach ($f in "valueset-all","valueset-active","valueset-inactive","valueset-en
 ```bash
 T="$HOME/.fhir/packages/hl7.fhir.uv.tx-ecosystem#1.9.3/package/tests"
 
-curl -X POST "http://localhost:9090/fhir/r4/CodeSystem" \
-  -H "Content-Type: application/fhir+json" \
-  --data-binary "@$T/simple/codesystem-simple.json"
-
-for f in valueset-all valueset-active valueset-inactive valueset-enumerated valueset-enumerated-bad valueset-filter-isa valueset-filter-property valueset-filter-regex valueset-filter-regex2 valueset-filter-regex-prop; do
-  curl -X POST "http://localhost:9090/fhir/r4/ValueSet" \
-    -H "Content-Type: application/fhir+json" \
-    --data-binary "@$T/simple/$f.json"
+curl -X POST "http://localhost:9090/fhir/r4/CodeSystem" -H "Content-Type: application/fhir+json" --data-binary "@$T/simple/codesystem-simple.json"
+for f in valueset-all valueset-active valueset-inactive valueset-enumerated valueset-enumerated-bad valueset-filter-isa valueset-filter-child-of valueset-filter-property valueset-filter-regex valueset-filter-regex2 valueset-filter-regex-prop; do
+  curl -X POST "http://localhost:9090/fhir/r4/ValueSet" -H "Content-Type: application/fhir+json" --data-binary "@$T/simple/$f.json"
 done
 ```
 

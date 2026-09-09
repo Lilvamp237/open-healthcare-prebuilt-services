@@ -100,8 +100,6 @@ done
 ```
 
 > **Known failure:** the `valueset-filter-child-of` POST above returns `400`. Its `compose.include.filter.op` value is `"child-of"`, which is an **R5-only** filter operator (added in R5's `filter-operator` ValueSet; R4 only has 9 operators, not the 11 in R5). This is expected and doesn't block the other 11 fixtures from loading. `simple-expand-child-of` will fail the same way (`400` instead of `2xx`) for the same reason - implementing `child-of` support is out of scope for this R4 service.
->
-> **Also expected to fail:** `simple-expand-contained` also can't fully pass. Its expected response includes `expansion.contains[].property` - which is an **R5-only** field (`ValueSet.expansion.contains.property`, cardinality `0..*`, added in R5; it does not exist on the `ValueSet.expansion.contains` element in R4 4.0.1). `ballerinax/health.fhir.r4`'s `ValueSetExpansionContains` type has no `property` field.
 
 ---
 

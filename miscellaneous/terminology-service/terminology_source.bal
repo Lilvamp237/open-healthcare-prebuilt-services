@@ -49,6 +49,39 @@ function initializeClient() returns store_pg:Client|store_h2:Client|error {
     }
 }
 
+# Result of resolving an inline (not persisted) ValueSet's `compose` directly - see `TerminologySource.expandInlineValueSetCompose`.
+type InlineComposeResult record {|
+    # The matching concepts (not yet paginated)
+    r4:ValueSetExpansionContains[] concepts;
+    # `url|version` (or bare `url` if unversioned) of every externally-referenced ValueSet that actually contributed at least one concept to `concepts`
+    map<boolean> usedValueSetKeys;
+|};
+
+# Pages a fully-resolved concept list into a `ValueSetExpansion` and attaches it to `valueSet`. Shared by `expandValueSet`'s DB-backed path and its inline-compose fallback, so both end up with identical pagination/total behavior.
+#
+# + valueSet - The `ValueSet` the expansion is being built for
+# + allConcepts - The complete (unpaged, already de-duplicated) set of matching concepts
+# + offset - The number of matching concepts to skip
+# + count - The maximum number of concepts to return
+# + return - `valueSet` with its `expansion` populated
+isolated function buildPagedValueSetExpansion(r4:ValueSet valueSet, r4:ValueSetExpansionContains[] allConcepts, int offset, int count) returns r4:ValueSet {
+    int totalCount = allConcepts.length();
+    r4:ValueSetExpansionContains[] pagedConcepts;
+    if totalCount > offset + count {
+        pagedConcepts = allConcepts.slice(offset, offset + count);
+    } else if totalCount >= offset {
+        pagedConcepts = allConcepts.slice(offset);
+    } else {
+        pagedConcepts = [];
+    }
+
+    r4:ValueSetExpansion expansion = createExpandedValueSet(valueSet, pagedConcepts);
+    expansion.total = totalCount;
+    expansion.offset = offset;
+    valueSet.expansion = expansion.clone();
+    return valueSet;
+}
+
 public isolated class TerminologySource {
     *terminology:Terminology;
 
@@ -383,12 +416,43 @@ public isolated class TerminologySource {
     public isolated function expandValueSet(map<r4:RequestSearchParameter[]> searchParameters, r4:ValueSet valueSet, int offset, int count) returns r4:ValueSet|r4:FHIRError {
         store_h2:ValueSet|error dbValueSet = getStoreValueSetByURL(valueSet.url.toString(), valueSet.version);
         if dbValueSet is error {
-            return r4:createFHIRError(
-                    "ValueSet not found for expansion",
-                    r4:ERROR,
-                    r4:PROCESSING_NOT_FOUND,
-                    cause = dbValueSet,
-                    httpStatusCode = http:STATUS_NOT_FOUND);
+            // Not every ValueSet handed to $expand was ever POSTed to us - an
+            // inline "valueSet" parameter can be a throwaway resource built
+            // entirely for one request Expand its own
+            // compose directly instead, the same way the DB-backed path
+            // below would if it had been persisted.
+            string? filter = searchParameters.hasKey(terminology:FILTER) ? searchParameters.get(terminology:FILTER)[0].value : ();
+            InlineComposeResult|r4:FHIRError inlineComposeResult = self.expandInlineValueSetCompose(searchParameters, valueSet, valueSet, filter);
+            if inlineComposeResult is r4:FHIRError {
+                return inlineComposeResult;
+            }
+            // compose is optional on the response (per the conformance suite's
+            // own fixtures) - and here it would just be the throwaway wrapper's
+            // own compose.include, not a single coherent rule a client could use the way a real
+            // stored ValueSet's compose is used elsewhere. Omit it rather than
+            // echo something that doesn't represent the expansion performed.
+            r4:ValueSet inlineResult = valueSet.clone();
+            inlineResult.compose = ();
+            r4:ValueSet pagedInlineResult = buildPagedValueSetExpansion(inlineResult, inlineComposeResult.concepts, offset, count);
+            // postProcessExpansion (terminology_connect.bal) derives
+            // used-codesystem/abstract/inactive from a uniform system on
+            // compose.include, which this throwaway wrapper doesn't have - but
+            // it preserves and builds on whatever expansion.parameter already
+            // holds, so seed used-valueset here; used-codesystem and the
+            // abstract/inactive backfill still happen there, since it can
+            // derive a uniform system from the
+            // contains array instead of compose.include when that's empty.
+            if inlineComposeResult.usedValueSetKeys.length() > 0 {
+                r4:ValueSetExpansionParameter[] usedValueSetParams = [];
+                foreach string usedValueSetKey in inlineComposeResult.usedValueSetKeys.keys() {
+                    usedValueSetParams.push({name: "used-valueset", valueUri: usedValueSetKey});
+                }
+                r4:ValueSetExpansion? pagedExpansion = pagedInlineResult.expansion;
+                if pagedExpansion is r4:ValueSetExpansion {
+                    pagedExpansion.'parameter = usedValueSetParams;
+                }
+            }
+            return pagedInlineResult;
         }
         int valueSetId = dbValueSet.valueSetId;
 
@@ -588,21 +652,222 @@ public isolated class TerminologySource {
             }
         }
 
-        int totalCount = allConcepts.length();
-        r4:ValueSetExpansionContains[] pagedConcepts;
-        if totalCount > offset + count {
-            pagedConcepts = allConcepts.slice(offset, offset + count);
-        } else if totalCount >= offset {
-            pagedConcepts = allConcepts.slice(offset);
-        } else {
-            pagedConcepts = [];
+        return buildPagedValueSetExpansion(valueSet, allConcepts, offset, count);
+    }
+
+    # Resolves a ValueSet's `compose.include` directly from the in-memory resource, for a ValueSet that isn't (and was never meant to be) persisted - e.g. a throwaway `valueSet` parameter built for a single `$expand` request. Mirrors `expandValueSet`'s DB-backed handling (explicit concept lists, whole-system includes, nested ValueSet includes, intensional filters), but reads `compose`/`contained` off `rootValueSet` instead of querying `valuesetcomposeincludes`/`valuesets`. CodeSystems referenced by `include.system` still have to be real, persisted CodeSystems - only the ValueSet's own composition is inline.
+    #
+    # + searchParameters - The request's search parameters, forwarded to any externally-referenced nested ValueSet via `expandValueSet`
+    # + rootValueSet - The ValueSet whose `contained` array local (`#...`) references in `compose` resolve against
+    # + composeSource - The ValueSet whose `compose.include` is being processed (`rootValueSet` itself, or one of its contained ValueSets when recursing into a local reference)
+    # + filter - Optional case-insensitive substring filter applied to concept display text
+    # + return - The matching concepts (not yet paginated) plus the `url|version` of every externally-referenced ValueSet that actually contributed to the result, or an `r4:FHIRError` if a filter is unsupported
+    isolated function expandInlineValueSetCompose(map<r4:RequestSearchParameter[]> searchParameters, r4:ValueSet rootValueSet, r4:ValueSet composeSource, string? filter) returns InlineComposeResult|r4:FHIRError {
+        r4:ValueSetExpansionContains[] allConcepts = [];
+        map<boolean> seenConceptKeys = {};
+        map<boolean> usedValueSetKeys = {};
+
+        r4:ValueSetCompose? compose = composeSource.compose;
+        if compose is () {
+            return {concepts: allConcepts, usedValueSetKeys};
         }
 
-        r4:ValueSetExpansion expansion = createExpandedValueSet(valueSet, pagedConcepts);
-        expansion.total = totalCount;
-        expansion.offset = offset;
-        valueSet.expansion = expansion.clone();
-        return valueSet;
+        foreach r4:ValueSetComposeInclude include in compose.include {
+            r4:uri? includeSystem = include.system;
+            r4:ValueSetComposeIncludeConcept[]? includeConcepts = include.concept;
+            r4:ValueSetComposeIncludeFilter[]? includeFilters = include.filter;
+
+            if includeSystem is r4:uri && includeConcepts is r4:ValueSetComposeIncludeConcept[] && includeConcepts.length() > 0 {
+                store_h2:CodeSystem|error cs = getStoreCodeSystemByURL(includeSystem, include.'version);
+                if cs is store_h2:CodeSystem {
+                    foreach r4:ValueSetComposeIncludeConcept ic in includeConcepts {
+                        store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(cs.codeSystemId, ic.code);
+                        if storeConcept is store_h2:Concept {
+                            r4:CodeSystemConcept|error decoded = byteToConcept(storeConcept.concept);
+                            if decoded is r4:CodeSystemConcept {
+                                if filter is string && decoded.display is string
+                                        && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>decoded.display).toUpperAscii()) {
+                                    continue;
+                                }
+                                string dedupeKey = includeSystem + "|" + decoded.code;
+                                if !seenConceptKeys.hasKey(dedupeKey) {
+                                    seenConceptKeys[dedupeKey] = true;
+                                    allConcepts.push({code: decoded.code, display: decoded.display, id: decoded.id, system: includeSystem});
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if includeSystem is r4:uri && includeFilters is r4:ValueSetComposeIncludeFilter[] && includeFilters.length() > 0 {
+                store_h2:CodeSystem|error filterCs = getStoreCodeSystemByURL(includeSystem, include.'version);
+                if filterCs is store_h2:CodeSystem {
+                    r4:ValueSetExpansionContains[]? intersected = ();
+                    foreach r4:ValueSetComposeIncludeFilter f in includeFilters {
+                        r4:ValueSetExpansionContains[] members = [];
+                        match f.op {
+                            "is-a"|"descendent-of" if f.property == "concept" => {
+                                members = hasClosureRows(filterCs.codeSystemId)
+                                    ? closureMembers(filterCs.codeSystemId, f.value, f.op == "is-a", filter)
+                                    : parentWalkDescendants(filterCs.codeSystemId, f.value, f.op == "is-a", filter);
+                            }
+                            "=" => {
+                                members = filterConceptsByProperty(
+                                        filterCs.codeSystemId, f.property, f.value, filter, stringEquals);
+                            }
+                            "regex" => {
+                                members = filterConceptsByProperty(
+                                        filterCs.codeSystemId, f.property, f.value, filter, regexMatches);
+                            }
+                            _ => {
+                                return r4:createFHIRError(
+                                        string `Unsupported ValueSet compose filter: op=${f.op}, property=${f.property}`,
+                                        r4:ERROR,
+                                        r4:PROCESSING_NOT_SUPPORTED,
+                                        diagnostic = "Supported filters: is-a/descendent-of on property 'concept', '=' and 'regex' on any property.",
+                                        httpStatusCode = http:STATUS_BAD_REQUEST);
+                            }
+                        }
+                        intersected = intersected is r4:ValueSetExpansionContains[]
+                            ? intersectByCode(intersected, members)
+                            : members;
+                    }
+                    foreach r4:ValueSetExpansionContains m in (intersected ?: []) {
+                        string dedupeKey = filterCs.url + "|" + (m.code ?: "");
+                        if !seenConceptKeys.hasKey(dedupeKey) {
+                            seenConceptKeys[dedupeKey] = true;
+                            m.system = filterCs.url;
+                            allConcepts.push(m);
+                        }
+                    }
+                }
+            } else if includeSystem is r4:uri {
+                // Whole-system include, no explicit concept list and no filter.
+                store_h2:CodeSystem|error cs = getStoreCodeSystemByURL(includeSystem, include.'version);
+                if cs is store_h2:CodeSystem {
+                    sql:ParameterizedQuery query = sql:queryConcat(escapeToQuery("codesystemCodeSystemId"), ` = ${cs.codeSystemId}`);
+                    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
+                    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
+                        select c;
+                    if dbConcepts is store_h2:Concept[] {
+                        foreach store_h2:Concept c in dbConcepts {
+                            r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
+                            if concept is r4:CodeSystemConcept {
+                                if filter is string && concept.display is string
+                                        && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
+                                    continue;
+                                }
+                                string dedupeKey = includeSystem + "|" + concept.code;
+                                if !seenConceptKeys.hasKey(dedupeKey) {
+                                    seenConceptKeys[dedupeKey] = true;
+                                    allConcepts.push({code: concept.code, display: concept.display, id: concept.id, system: includeSystem});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            r4:canonical[]? includeValueSets = include.valueSet;
+            if includeValueSets is r4:canonical[] && includeValueSets.length() > 0 {
+                // Per the FHIR spec, multiple valueSet references on the SAME
+                // include are intersected - unlike multiple `include` entries
+                // (which are unioned), or multiple `filter` entries on one
+                // include (already intersected below, the same way). Resolve
+                // each reference's own member list first, then intersect them.
+                r4:ValueSetExpansionContains[]? intersectedNested = ();
+                // Keys of every externally-referenced ValueSet resolved while
+                // processing this include - merged into usedValueSetKeys only
+                // if this include actually contributes to the final result
+                // below.
+                map<boolean> candidateUsedValueSetKeys = {};
+                foreach r4:canonical ref in includeValueSets {
+                    r4:ValueSetExpansionContains[] nestedResult;
+                    if ref.startsWith("#") {
+                        // Local reference: resolve within rootValueSet's own
+                        // contained array rather than the store - a contained
+                        // resource, by definition, was never persisted on its own.
+                        string localId = ref.substring(1);
+                        r4:ValueSet? containedVs = ();
+                        r4:Resource[]? contained = rootValueSet.contained;
+                        if contained is r4:Resource[] {
+                            foreach r4:Resource res in contained {
+                                json resJson = res.toJson();
+                                if resJson is map<json> && resJson["resourceType"] == "ValueSet" && resJson["id"] == localId {
+                                    r4:ValueSet|error parsed = resJson.cloneWithType(r4:ValueSet);
+                                    if parsed is r4:ValueSet {
+                                        containedVs = parsed;
+                                    }
+                                }
+                            }
+                        }
+                        // A local reference that can't be resolved contributes no
+                        // members - under intersection, that correctly zeroes out
+                        // the whole include rather than silently ignoring it.
+                        if containedVs is r4:ValueSet {
+                            InlineComposeResult|r4:FHIRError nestedComposeResult =
+                                self.expandInlineValueSetCompose(searchParameters, rootValueSet, containedVs, filter);
+                            if nestedComposeResult is r4:FHIRError {
+                                return nestedComposeResult;
+                            }
+                            nestedResult = nestedComposeResult.concepts;
+                            foreach string key in nestedComposeResult.usedValueSetKeys.keys() {
+                                candidateUsedValueSetKeys[key] = true;
+                            }
+                        } else {
+                            nestedResult = [];
+                        }
+                    } else {
+                        // External reference: resolve the normal way (a stored
+                        // ValueSet, or - recursively - another inline fallback).
+                        r4:ValueSet|r4:FHIRError expanded = self.expandValueSet(searchParameters, {resourceType: "ValueSet", status: "active", url: ref}, 0, 1000);
+                        if expanded is r4:FHIRError {
+                            nestedResult = [];
+                        } else {
+                            r4:ValueSetExpansion? nestedExpansion = expanded.expansion;
+                            nestedResult = nestedExpansion is r4:ValueSetExpansion
+                                ? (nestedExpansion.contains ?: [])
+                                : [];
+                            string? expandedUrl = expanded.url;
+                            if expandedUrl is string {
+                                // expandValueSet returns the request object it was
+                                // given, not the resolved DB row - so when we call it above with a bare url
+                                // and no version, expanded.version stays unset even
+                                // though the stored ValueSet actually has one.
+                                string? resolvedVersion = expanded.version;
+                                if resolvedVersion is () {
+                                    store_h2:ValueSet|error storedRef = getStoreValueSetByURL(expandedUrl);
+                                    if storedRef is store_h2:ValueSet {
+                                        resolvedVersion = storedRef.version;
+                                    }
+                                }
+                                string usedKey = resolvedVersion is string && resolvedVersion != ""
+                                    ? expandedUrl + "|" + resolvedVersion
+                                    : expandedUrl;
+                                candidateUsedValueSetKeys[usedKey] = true;
+                            }
+                        }
+                    }
+                    intersectedNested = intersectedNested is r4:ValueSetExpansionContains[]
+                        ? intersectByCode(intersectedNested, nestedResult)
+                        : nestedResult;
+                }
+                r4:ValueSetExpansionContains[] includeContribution = intersectedNested ?: [];
+                if includeContribution.length() > 0 {
+                    foreach string key in candidateUsedValueSetKeys.keys() {
+                        usedValueSetKeys[key] = true;
+                    }
+                }
+                foreach r4:ValueSetExpansionContains c in includeContribution {
+                    string dedupeKey = (c.system ?: "") + "|" + (c.code ?: "");
+                    if !seenConceptKeys.hasKey(dedupeKey) {
+                        seenConceptKeys[dedupeKey] = true;
+                        allConcepts.push(c);
+                    }
+                }
+            }
+        }
+
+        return {concepts: allConcepts, usedValueSetKeys};
     }
 
     # Implements FHIR `$subsumes`, determining the subsumption relationship between two codes in the same `CodeSystem` via the closure table (falling back to a parent-chain walk).
@@ -2184,6 +2449,35 @@ isolated function getConceptFlags(r4:uri system, r4:code code, string? version =
         }
     }
     return [isAbstract, isInactive];
+}
+
+# Reads a concept's raw `status` property value (e.g. `"retired"`), if it has one. Unlike `getConceptFlags`, which only derives the boolean `inactive` flag from it, this exposes the actual value - needed to echo it back as an `expansion.contains[].property` entry (via the R4 cross-version extension, since `ValueSetExpansionContains` has no native `property` field), the same way `postProcessExpansion` derives `abstract`/`inactive`.
+#
+# + system - Canonical URL of the CodeSystem the concept belongs to
+# + code - Code of the concept to look up
+# + version - Optional version of the CodeSystem
+# + return - The concept's `status` property value, or `()` if it has none (or the concept/CodeSystem can't be found)
+isolated function getConceptStatusPropertyValue(r4:uri system, r4:code code, string? version = ()) returns string? {
+    store_h2:CodeSystem|error storeCs = getStoreCodeSystemByURL(system, version);
+    if storeCs is error {
+        return ();
+    }
+    store_h2:Concept|r4:FHIRError storeConcept = getStoreConceptByCode(storeCs.codeSystemId, code);
+    if storeConcept is r4:FHIRError {
+        return ();
+    }
+    r4:CodeSystemConcept|error concept = byteToConcept(storeConcept.concept);
+    if concept is error {
+        return ();
+    }
+    if concept.property is r4:CodeSystemConceptProperty[] {
+        foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
+            if prop.code == "status" && prop.valueCode is r4:code {
+                return <string>prop.valueCode;
+            }
+        }
+    }
+    return ();
 }
 
 type ConceptRelationshipQueryRow record {|

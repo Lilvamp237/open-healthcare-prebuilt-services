@@ -265,7 +265,18 @@ isolated function filterSupportedExpansionParams(map<r4:RequestSearchParameter[]
                 || normalized == "_offset" || normalized == "_count" {
             r4:RequestSearchParameter[] renamed = [];
             foreach var p in value {
-                renamed.push({name: normalized, value: p.value, 'type: p.'type, typedValue: p.typedValue});
+                string paramValue = p.value;
+                if normalized == "_count" {
+                    // terminology:valueSetExpansion hard-rejects a count above its
+                    // own TERMINOLOGY_SEARCH_MAXIMUM_COUNT with a 413, instead of
+                    // capping it. Clamp here instead, so a request
+                    // that still gets fewer results than asked for still succeeds.
+                    int|error requestedCount = int:fromString(paramValue);
+                    if requestedCount is int && requestedCount > terminology:TERMINOLOGY_SEARCH_MAXIMUM_COUNT {
+                        paramValue = terminology:TERMINOLOGY_SEARCH_MAXIMUM_COUNT.toString();
+                    }
+                }
+                renamed.push({name: normalized, value: paramValue, 'type: p.'type, typedValue: p.typedValue});
             }
             supported[normalized] = renamed;
         }
@@ -333,6 +344,26 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         return mutable;
     }
 
+    // The compose-based derivation above only looks at compose.include.system,
+    // so it finds nothing for a ValueSet composed entirely of `valueSet`
+    // references - those entries are already tagged with their own system
+    // though, so derive a uniform system from the result itself as a fallback.
+    if csUrl is () && contains.length() > 0 {
+        string? firstEntrySystem = contains[0].system;
+        if firstEntrySystem is string {
+            boolean uniform = true;
+            foreach var entry in contains {
+                if entry.system != firstEntrySystem {
+                    uniform = false;
+                    break;
+                }
+            }
+            if uniform {
+                csUrl = firstEntrySystem;
+            }
+        }
+    }
+
     if csUrl is string {
         foreach int i in 0 ..< contains.length() {
             if contains[i].system is () {
@@ -347,6 +378,22 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
                 }
                 if flags[1] {
                     contains[i].inactive = true;
+                }
+
+                // R4 has no native `expansion.contains.property` element (added in R5) - represent
+                // it via the documented R4<->R5 cross-version extension instead:
+                // https://hl7.org/fhir/uv/tx-ecosystem/r4.html
+                string? statusPropertyValue = getConceptStatusPropertyValue(<r4:uri>csUrl, entryCode);
+                if statusPropertyValue is string {
+                    r4:CodeExtension codeSubExtension = {url: "code", valueCode: "status"};
+                    r4:CodeExtension valueSubExtension = {url: "value", valueCode: <r4:code>statusPropertyValue};
+                    r4:ExtensionExtension propertyExtension = {
+                        url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.contains.property",
+                        extension: [codeSubExtension, valueSubExtension]
+                    };
+                    r4:Extension[] entryExtensions = contains[i].extension ?: [];
+                    entryExtensions.push(propertyExtension);
+                    contains[i].extension = entryExtensions;
                 }
             }
         }
@@ -380,7 +427,12 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         expansion.total = filtered.length();
     }
 
-    r4:ValueSetExpansionParameter[] expParams = [];
+    // Preserve any parameter entries already set on the expansion we were
+    // handed (e.g. used-valueset, seeded by expandInlineValueSetCompose's
+    // caller for a resource resolved via that fallback) rather than discarding
+    // them - nothing currently sets expansion.parameter before this function
+    // runs otherwise, so this is a no-op for every other call site.
+    r4:ValueSetExpansionParameter[] expParams = expansion.'parameter ?: [];
 
     // Echo back the requested count if client sent one - accepting both the
     // bare and FHIR-standard "_"-prefixed spellings, since

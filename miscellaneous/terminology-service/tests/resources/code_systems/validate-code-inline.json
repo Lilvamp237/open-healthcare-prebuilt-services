@@ -1,0 +1,17 @@
+{
+    "resourceType": "Parameters",
+    "parameter": [
+        {
+            "name": "result",
+            "valueBoolean": true
+        },
+        {
+            "name": "display",
+            "valueString": "Custom Display"
+        },
+        {
+            "name": "definition",
+            "valueString": "A custom inline concept used only for validate-code testing."
+        }
+    ]
+}

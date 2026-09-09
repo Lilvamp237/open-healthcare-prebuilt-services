@@ -253,6 +253,154 @@ public function lookupCodeSystem10() returns error? {
 }
 
 @test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem1() returns error? {
+    http:Response response = check csClient->get("/$validate-code?url=http://hl7.org/fhir/account-status&code=inactive", ());
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem2() returns error? {
+    http:Response response = check csClient->get("/account-status/$validate-code?code=inactive", ());
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem3() returns error? {
+    r4:Coding|r4:FHIRError coding = terminology:createCoding("http://hl7.org/fhir/account-status", "inactive", terminology = terminology_source);
+    r4:Parameters p = {'parameter: [{name: "coding", valueCoding: check coding}]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem4() returns error? {
+    r4:ParametersParameter urlParam = {name: "url", valueUri: "http://hl7.org/fhir/account-status"};
+    r4:ParametersParameter codeParam = {name: "code", valueCode: "inactive"};
+    r4:Parameters p = {'parameter: [urlParam, codeParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem5() returns error? {
+    json requestPayload = returnCodeSystemData("codeableconcept-inline-codesystem");
+    http:Response response = check csClient->post("/$validate-code", requestPayload, {"Content-Type": FHIR_JSON});
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code-inline");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem6() returns error? {
+    r4:ParametersParameter urlParam = {name: "url", valueUri: "http://hl7.org/fhir/account-status"};
+    r4:ParametersParameter codeParam = {name: "code", valueCode: "inactive"};
+    r4:ParametersParameter displayParam = {name: "display", valueString: "Inactive"};
+    r4:Parameters p = {'parameter: [urlParam, codeParam, displayParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem7() returns error? {
+    r4:ParametersParameter urlParam = {name: "url", valueUri: "http://hl7.org/fhir/account-status"};
+    r4:ParametersParameter codeParam = {name: "code", valueCode: "inactive"};
+    r4:ParametersParameter displayParam = {name: "display", valueString: "Not The Right Display"};
+    r4:Parameters p = {'parameter: [urlParam, codeParam, displayParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actual = check response.getJsonPayload();
+
+    json expected = returnCodeSystemData("validate-code-display-mismatch");
+    check assertParametersJsonEqual(actual, expected);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "failure_scenario"]
+}
+public function validateCodeCodeSystem8() returns error? {
+    http:Response response = check csClient->post("/$validate-code", (), {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid request payload");
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "failure_scenario"]
+}
+public function validateCodeCodeSystem9() returns error? {
+    http:Response response = check csClient->post("/$validate-code", {}, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Invalid operation payload due to Payload must be a valid FHIR Parameters or Bundle resource.");
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "failure_scenario"]
+}
+public function validateCodeCodeSystem10() returns error? {
+    r4:ParametersParameter urlParam = {name: "url", valueUri: "http://hl7.org/fhir/account-status"};
+    r4:Parameters p = {'parameter: [urlParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Can not find a valid code to validate due to Provide (coding|codeableConcept) or (code), and (codeSystem resource) or (url).");
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "failure_scenario"]
+}
+public function validateCodeCodeSystem11() returns error? {
+    r4:ParametersParameter codeParam = {name: "code", valueCode: "inactive"};
+    r4:Parameters p = {'parameter: [codeParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text,
+            "Can not find a CodeSystem due to Provide either a 'codeSystem' resource or a 'url' parameter");
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "failure_scenario"]
+}
+public function validateCodeCodeSystem12() returns error? {
+    http:Response response = check csClient->get("/$validate-code?url=http://hl7.org/fhir/account-status", ());
+    json actualJson = check response.getJsonPayload();
+    r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
+    test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Can not find a CodeSystem, Code value is missing");
+}
+
+@test:Config {
     groups: ["codesystem", "subsume_codesystem", "successful_scenario"]
 }
 public function subsumeCodeSystem1() returns error? {

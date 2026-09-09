@@ -1,0 +1,21 @@
+{
+    "resourceType": "Parameters",
+    "parameter": [
+        {
+            "name": "result",
+            "valueBoolean": false
+        },
+        {
+            "name": "display",
+            "valueString": "Inactive"
+        },
+        {
+            "name": "definition",
+            "valueString": "This account is inactive and should not be used to track financial information."
+        },
+        {
+            "name": "message",
+            "valueString": "Display \"Not The Right Display\" does not match the expected display \"Inactive\""
+        }
+    ]
+}

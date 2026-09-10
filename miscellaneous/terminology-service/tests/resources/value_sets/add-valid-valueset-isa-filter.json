@@ -1,0 +1,24 @@
+{
+  "resourceType": "ValueSet",
+  "id": "race-descendants-isa",
+  "url": "http://example.org/fhir/ValueSet/race-descendants-isa",
+  "name": "RaceDescendantsIsA",
+  "title": "Race codes subsumed by 2133-7",
+  "status": "active",
+  "version": "1.0.0",
+  "description": "Single include, single is-a filter - the compose shape $expand resolves with a windowed SQL query rather than by materializing the whole closure.",
+  "compose": {
+    "include": [
+      {
+        "system": "urn:oid:2.16.840.1.113883.6.238",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "2133-7"
+          }
+        ]
+      }
+    ]
+  }
+}

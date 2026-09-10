@@ -75,8 +75,19 @@ isolated function buildPagedValueSetExpansion(r4:ValueSet valueSet, r4:ValueSetE
         pagedConcepts = [];
     }
 
+    return assembleValueSetExpansion(valueSet, pagedConcepts, totalCount, offset);
+}
+
+# Attaches an already-paged concept list to `valueSet` as its expansion. Split out of `buildPagedValueSetExpansion` so that a path which never holds the full member list - one that lets the database do the windowing and gets `total` from a separate `COUNT(*)` - still produces an identically-shaped expansion.
+#
+# + valueSet - The `ValueSet` the expansion is being built for
+# + pagedConcepts - The concepts for this page only
+# + total - Total number of matching concepts across all pages
+# + offset - The number of matching concepts skipped before this page
+# + return - `valueSet` with its `expansion` populated
+isolated function assembleValueSetExpansion(r4:ValueSet valueSet, r4:ValueSetExpansionContains[] pagedConcepts, int total, int offset) returns r4:ValueSet {
     r4:ValueSetExpansion expansion = createExpandedValueSet(valueSet, pagedConcepts);
-    expansion.total = totalCount;
+    expansion.total = total;
     expansion.offset = offset;
     valueSet.expansion = expansion.clone();
     return valueSet;
@@ -473,6 +484,27 @@ public isolated class TerminologySource {
         r4:ValueSetExpansionContains[] allConcepts = [];
         string? filter = searchParameters.hasKey(terminology:FILTER) ? searchParameters.get(terminology:FILTER)[0].value : ();
 
+        // The compose *rules* live in the stored resource itself - the
+        // valueset_compose_includes rows fetched above only cover extensional
+        // includes (a concept list, a whole CodeSystem, nested ValueSets).
+        r4:ValueSet|error storedVs = byteToValueSet(dbValueSet.valueSet);
+
+        // Fast path: a compose the database can satisfy end to end, so the
+        // matching rows are ordered, counted and windowed in SQL rather than
+        // materialized in full and sliced afterwards. Anything else - and any
+        // failure here - falls through to the general path below unchanged.
+        if storedVs is r4:ValueSet {
+            WindowedInclude? window = windowedIncludeFastPath(storedVs, includes, filter);
+            if window is WindowedInclude {
+                [r4:ValueSetExpansionContains[], int]|error windowed = expandWindowedInclude(window, filter, offset, count);
+                if windowed is [r4:ValueSetExpansionContains[], int] {
+                    return assembleValueSetExpansion(valueSet, windowed[0], windowed[1], offset);
+                }
+                log:printError("Windowed include expansion failed; falling back to in-memory expansion",
+                        windowed, valueSetUrl = valueSet.url ?: "");
+            }
+        }
+
         // De-dupes concepts contributed by multiple includes/filters on the same
         // CodeSystem (e.g. an unfiltered include plus a filtered include on the
         // same system). Keyed by internal codeSystemId rather than
@@ -516,29 +548,29 @@ public isolated class TerminologySource {
             // If systemFlag, get all concepts for the code system
             else if include.systemFlag && include.codeSystemId is int {
                 sql:ParameterizedQuery query = sql:queryConcat(escapeToQuery("codesystemCodeSystemId"), ` = ${include.codeSystemId}`);
-                stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
-                store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-                    select c;
-                if dbConcepts is error {
-                    continue;
+                string? inMemoryFilter = filter;
+                if filter is string && isPlainTextFilter(filter) {
+                    query = sql:queryConcat(query, displayContainsFragment(escapeToQuery("display"), filter));
+                    inMemoryFilter = ();
                 }
                 string? includeSystemUrl = getCodeSystemUrlById(<int>include.codeSystemId);
-                foreach store_h2:Concept c in dbConcepts {
-                    r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
-                    if concept is r4:CodeSystemConcept {
-                        if filter is string {
-                            if concept.display is string && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
-                                continue;
+                // Streamed rather than collected first: a whole-system include
+                // covers every concept in the CodeSystem.
+                stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
+                error? iterationError = from store_h2:Concept c in conceptStream
+                    do {
+                        r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
+                        if concept is r4:CodeSystemConcept
+                                && (inMemoryFilter is () || displayMatchesTextFilter(concept.display, inMemoryFilter)) {
+                            string dedupeKey = (includeSystemUrl ?: "") + "|" + concept.code;
+                            if !seenConceptKeys.hasKey(dedupeKey) {
+                                seenConceptKeys[dedupeKey] = true;
+                                allConcepts.push({code: concept.code, display: concept.display, id: concept.id, system: includeSystemUrl});
                             }
                         }
-                        string dedupeKey = (includeSystemUrl ?: "") + "|" + concept.code;
-                        if seenConceptKeys.hasKey(dedupeKey) {
-                            continue;
-                        }
-                        seenConceptKeys[dedupeKey] = true;
-                        r4:ValueSetExpansionContains exp = {code: concept.code, display: concept.display, id: concept.id, system: includeSystemUrl};
-                        allConcepts.push(exp);
-                    }
+                    };
+                if iterationError is error {
+                    continue;
                 }
             }
             // If valueSetFlag, get nested value sets and expand recursively
@@ -584,9 +616,8 @@ public isolated class TerminologySource {
         }
 
         // Intensional includes: resolve `concept is-a` / `descendent-of`
-        // filters against the closure table. The filter rule lives in the
-        // stored ValueSet resource
-        r4:ValueSet|error storedVs = byteToValueSet(dbValueSet.valueSet);
+        // filters against the closure table, from the compose rules decoded
+        // above.
         if storedVs is r4:ValueSet {
             r4:ValueSetCompose? composeRules = storedVs.compose;
             if composeRules is r4:ValueSetCompose {
@@ -613,7 +644,7 @@ public isolated class TerminologySource {
                                     }
                                     "=" => {
                                         members = filterConceptsByProperty(
-                                                filterCs.codeSystemId, f.property, f.value, filter, stringEquals);
+                                                filterCs.codeSystemId, f.property, f.value, filter, stringEquals, exactMatch = true);
                                     }
                                     "regex" => {
                                         members = filterConceptsByProperty(
@@ -712,7 +743,7 @@ public isolated class TerminologySource {
                             }
                             "=" => {
                                 members = filterConceptsByProperty(
-                                        filterCs.codeSystemId, f.property, f.value, filter, stringEquals);
+                                        filterCs.codeSystemId, f.property, f.value, filter, stringEquals, exactMatch = true);
                             }
                             "regex" => {
                                 members = filterConceptsByProperty(
@@ -745,24 +776,28 @@ public isolated class TerminologySource {
                 store_h2:CodeSystem|error cs = getStoreCodeSystemByURL(includeSystem, include.'version);
                 if cs is store_h2:CodeSystem {
                     sql:ParameterizedQuery query = sql:queryConcat(escapeToQuery("codesystemCodeSystemId"), ` = ${cs.codeSystemId}`);
+                    string? inMemoryFilter = filter;
+                    if filter is string && isPlainTextFilter(filter) {
+                        query = sql:queryConcat(query, displayContainsFragment(escapeToQuery("display"), filter));
+                        inMemoryFilter = ();
+                    }
+                    // Streamed rather than collected first: a whole-system
+                    // include covers every concept in the CodeSystem.
                     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
-                    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-                        select c;
-                    if dbConcepts is store_h2:Concept[] {
-                        foreach store_h2:Concept c in dbConcepts {
+                    error? iterationError = from store_h2:Concept c in conceptStream
+                        do {
                             r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
-                            if concept is r4:CodeSystemConcept {
-                                if filter is string && concept.display is string
-                                        && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
-                                    continue;
-                                }
+                            if concept is r4:CodeSystemConcept
+                                    && (inMemoryFilter is () || displayMatchesTextFilter(concept.display, inMemoryFilter)) {
                                 string dedupeKey = includeSystem + "|" + concept.code;
                                 if !seenConceptKeys.hasKey(dedupeKey) {
                                     seenConceptKeys[dedupeKey] = true;
                                     allConcepts.push({code: concept.code, display: concept.display, id: concept.id, system: includeSystem});
                                 }
                             }
-                        }
+                        };
+                    if iterationError is error {
+                        log:printDebug("Whole-system include expansion failed", iterationError);
                     }
                 }
             }
@@ -1037,7 +1072,197 @@ isolated function closureContainsPair(int ancestorId, int descendantId, int code
     return results is error ? false : results.length() > 0;
 }
 
-# Resolves an intensional `concept is-a` / `descendent-of` filter to its members via the closure table.
+# The in-memory form of the `$expand` display filter, kept for `filter` values that hold regex syntax - a literal-text value is pushed into SQL as a LIKE predicate by `displayContainsFragment` instead, so non-matching rows are never read.
+#
+# A concept with no display passes, matching the `display is string && !isFullMatch(...)` test this replaced. See `displayContainsFragment` for why that quirk is preserved rather than fixed here.
+#
+# + display - The concept's display, if it has one
+# + textFilter - The request's `filter` value
+# + return - `true` if the concept survives the filter
+isolated function displayMatchesTextFilter(string? display, string textFilter) returns boolean {
+    if display is () {
+        return true;
+    }
+    return regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, display.toUpperAscii());
+}
+
+# A `compose` shape that `$expand` can satisfy entirely in the database: exactly one `include`, naming one CodeSystem, with no explicit concept list and no nested `valueSet` references - either narrowed by exactly one `is-a`/`descendent-of` filter (the ordinary SNOMED "all descendants of X" ValueSet) or not narrowed at all (a whole-CodeSystem include). These are the only shapes needing neither cross-include de-duplication nor filter intersection, so the row set can be ordered, counted and windowed in SQL instead of being materialized in full and sliced afterwards.
+type WindowedInclude record {|
+    # Internal id of the CodeSystem the include selects from
+    int codeSystemId;
+    # Canonical URL of that CodeSystem, stamped onto every returned entry
+    string codeSystemUrl;
+    # Code the `is-a`/`descendent-of` filter is anchored on, or `()` for a whole-CodeSystem include
+    string? anchorCode;
+    # For an anchored include, whether the anchor itself is a member (`is-a`) or only its descendants (`descendent-of`). Meaningless when `anchorCode` is `()`.
+    boolean includeSelf;
+|};
+
+# Recognizes the `WindowedInclude` shapes, returning `()` for anything else so the caller falls through to the general in-memory path. Deliberately strict: it is only ever an optimization, so a shape it doesn't recognize costs nothing but the checks.
+#
+# + storedVs - The stored `ValueSet` resource, whose `compose` holds the include rules
+# + includes - The ValueSet's persisted compose-include rows
+# + textFilter - The request's `filter` value, if any
+# + return - The recognized fast-path parameters, or `()` if this compose isn't one
+isolated function windowedIncludeFastPath(r4:ValueSet storedVs, store_h2:ValueSetComposeInclude[] includes, string? textFilter)
+        returns WindowedInclude? {
+    // A regex-bearing `filter` has no LIKE equivalent, so the windowed page
+    // query has no way to apply it - and applying it to the page afterwards
+    // would return a short page under an already-computed total.
+    if textFilter is string && !isPlainTextFilter(textFilter) {
+        return ();
+    }
+
+    r4:ValueSetCompose? compose = storedVs.compose;
+    if compose is () || compose.include.length() != 1 {
+        return ();
+    }
+
+    r4:ValueSetComposeInclude include = compose.include[0];
+    r4:uri? system = include.system;
+    if system is () || include.concept is r4:ValueSetComposeIncludeConcept[] || include.valueSet is r4:canonical[] {
+        return ();
+    }
+
+    store_h2:CodeSystem|error codeSystem = getStoreCodeSystemByURL(system, include.'version);
+    if codeSystem is error {
+        return ();
+    }
+
+    r4:ValueSetComposeIncludeFilter[]? filters = include.filter;
+    if filters is () || filters.length() == 0 {
+        // Whole-CodeSystem include. It is persisted as exactly one systemFlag
+        // row (`saveValueSetCodeSystem`), and that row is what the general
+        // path would have expanded - so anything else here (no row written
+        // yet, an extra row, a row naming a different CodeSystem) is not this
+        // shape and must not be claimed.
+        if includes.length() != 1 || !includes[0].systemFlag || includes[0].codeSystemId != codeSystem.codeSystemId {
+            return ();
+        }
+        return {
+            codeSystemId: codeSystem.codeSystemId,
+            codeSystemUrl: codeSystem.url,
+            anchorCode: (),
+            includeSelf: false
+        };
+    }
+
+    // A filtered include is never persisted as a compose-include row
+    // (`saveValueSetComposeInclude` returns before writing one), so this shape
+    // has no rows at all. Any row present means some other include also
+    // contributes members, which would need de-duplication against this one.
+    if includes.length() > 0 {
+        return ();
+    }
+
+    // More than one filter would have to be intersected, which needs both
+    // sides resolved in full.
+    if filters.length() != 1 {
+        return ();
+    }
+    r4:ValueSetComposeIncludeFilter singleFilter = filters[0];
+    if singleFilter.property != "concept" || (singleFilter.op != "is-a" && singleFilter.op != "descendent-of") {
+        return ();
+    }
+    // Without closure rows, membership has to be found by walking parent links
+    // level by level (`parentWalkDescendants`), which is not a single query.
+    if !hasClosureRows(codeSystem.codeSystemId) {
+        return ();
+    }
+
+    return {
+        codeSystemId: codeSystem.codeSystemId,
+        codeSystemUrl: codeSystem.url,
+        anchorCode: singleFilter.value,
+        includeSelf: singleFilter.op == "is-a"
+    };
+}
+
+# Resolves a `WindowedInclude` with two queries - a `COUNT(*)` for `expansion.total` and an ordered, windowed `SELECT` for the requested page - so only the page's concept blobs are ever read or de-serialized, whatever the size of the closure or CodeSystem.
+#
+# The explicit `ORDER BY conceptId` also makes paging stable: the in-memory paths issue their queries without an ORDER BY, so the row order backing `offset`/`count` is whatever the database happens to return.
+#
+# `total` comes from `COUNT(*)`, which counts every matching row. The in-memory paths instead skip a row whose concept blob fails to de-serialize, so a corrupt blob would make the two disagree by one - the windowed count being the truthful one.
+#
+# + window - The recognized fast-path parameters
+# + textFilter - The request's `filter` value, if any
+# + offset - Number of matching concepts to skip
+# + count - Maximum number of concepts to return
+# + return - The page's concepts and the total match count, or an `error` if either query fails
+isolated function expandWindowedInclude(WindowedInclude window, string? textFilter, int offset, int count)
+        returns [r4:ValueSetExpansionContains[], int]|error {
+    sql:ParameterizedQuery fromAndWhere;
+    string? anchorCode = window.anchorCode;
+    if anchorCode is string {
+        store_h2:Concept|r4:FHIRError anchor = getStoreConceptByCode(window.codeSystemId, anchorCode);
+        if anchor is r4:FHIRError {
+            // An unresolvable anchor selects nothing - the same result the
+            // in-memory path returns for it.
+            return [[], 0];
+        }
+        fromAndWhere = sql:queryConcat(
+                ` FROM `, escapeToQuery("concepts"), ` c JOIN `, escapeToQuery("concept_closure"), ` cc`,
+                ` ON c.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
+                ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${anchor.conceptId}`,
+                ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${window.codeSystemId}`,
+                window.includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`));
+    } else {
+        fromAndWhere = sql:queryConcat(
+                ` FROM `, escapeToQuery("concepts"), ` c`,
+                ` WHERE c.`, escapeToQuery("codesystemCodeSystemId"), ` = ${window.codeSystemId}`);
+    }
+
+    // Only a filter that means literal text can become a LIKE predicate; a
+    // regex-bearing one isn't recognized as a fast path candidate at all,
+    // since the page query has no way to apply it.
+    if textFilter is string {
+        fromAndWhere = sql:queryConcat(fromAndWhere,
+                displayContainsFragment(sql:queryConcat(`c.`, escapeToQuery("display")), textFilter));
+    }
+
+    sql:ParameterizedQuery countQuery = sql:queryConcat(`SELECT COUNT(*) AS `, escapeToQuery("total"), fromAndWhere);
+    stream<record {|int total;|}, persist:Error?> countStream = sClient->queryNativeSQL(countQuery);
+    record {|int total;|}[]|error countRows = from record {|int total;|} row in countStream
+        select row;
+    if countRows is error {
+        return countRows;
+    }
+    int total = countRows.length() > 0 ? countRows[0].total : 0;
+    if total == 0 || offset >= total {
+        return [[], total];
+    }
+
+    sql:ParameterizedQuery pageQuery = sql:queryConcat(
+            `SELECT c.* `, fromAndWhere,
+            ` ORDER BY c.`, escapeToQuery("conceptId"), ` `, getLimitClause(count, offset));
+
+    r4:ValueSetExpansionContains[] page = [];
+    stream<store_h2:Concept, persist:Error?> pageStream = sClient->queryNativeSQL(pageQuery);
+    while true {
+        record {|store_h2:Concept value;|}|persist:Error? nextRow = pageStream.next();
+        if nextRow is () {
+            break;
+        }
+        if nextRow is persist:Error {
+            check pageStream.close();
+            return nextRow;
+        }
+        r4:CodeSystemConcept|error concept = byteToConcept(nextRow.value.concept);
+        if concept is r4:CodeSystemConcept {
+            page.push({
+                code: concept.code,
+                display: concept.display,
+                id: concept.id,
+                system: window.codeSystemUrl
+            });
+        }
+    }
+    check pageStream.close();
+
+    return [page, total];
+}
+
+# Resolves an intensional `concept is-a` / `descendent-of` filter to its members via the closure table. Used when the surrounding compose is too complex for `expandWindowedInclude` to satisfy in SQL - it returns every member, so the caller can de-duplicate and intersect before paging.
 #
 # + codeSystemId - Internal id of the CodeSystem to search within
 # + anchorCode - Code of the anchor concept whose descendants are collected
@@ -1052,30 +1277,37 @@ isolated function closureMembers(int codeSystemId, string anchorCode, boolean in
         return members;
     }
 
+    // A literal-text filter becomes a LIKE predicate, so non-matching rows are
+    // never read or de-serialized. One carrying regex syntax has no LIKE
+    // equivalent and still has to be matched in memory.
+    sql:ParameterizedQuery displayFragment = ``;
+    string? inMemoryFilter = textFilter;
+    if textFilter is string && isPlainTextFilter(textFilter) {
+        displayFragment = displayContainsFragment(sql:queryConcat(`c.`, escapeToQuery("display")), textFilter);
+        inMemoryFilter = ();
+    }
+
     sql:ParameterizedQuery query = sql:queryConcat(
             `SELECT c.* FROM `, escapeToQuery("concepts"), ` c JOIN `, escapeToQuery("concept_closure"), ` cc ON c.`, escapeToQuery("conceptId"), ` = cc.`, escapeToQuery("descendantConceptId"),
             ` WHERE cc.`, escapeToQuery("ancestorConceptId"), ` = ${anchor.conceptId}`,
             ` AND cc.`, escapeToQuery("codeSystemId"), ` = ${codeSystemId}`,
-                includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`)
+                includeSelf ? `` : sql:queryConcat(` AND cc.`, escapeToQuery("depth"), ` >= 1`),
+            displayFragment
     );
 
+    // Streamed rather than collected into a `store_h2:Concept[]` first: only the
+    // projected entries are held, not every matching row together with its blob.
     stream<store_h2:Concept, persist:Error?> conceptStream = sClient->queryNativeSQL(query);
-    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-        select c;
-    if dbConcepts is error {
-        return members;
-    }
-
-    foreach store_h2:Concept c in dbConcepts {
-        r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
-        if concept is r4:CodeSystemConcept {
-            if textFilter is string {
-                if concept.display is string && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
-                    continue;
-                }
+    error? iterationError = from store_h2:Concept dbConcept in conceptStream
+        do {
+            r4:CodeSystemConcept|error concept = byteToConcept(dbConcept.concept);
+            if concept is r4:CodeSystemConcept
+                    && (inMemoryFilter is () || displayMatchesTextFilter(concept.display, inMemoryFilter)) {
+                members.push({code: concept.code, display: concept.display, id: concept.id});
             }
-            members.push({code: concept.code, display: concept.display, id: concept.id});
-        }
+        };
+    if iterationError is error {
+        return members;
     }
 
     return members;
@@ -1684,52 +1916,57 @@ isolated function isPathologicalRegex(string pattern) returns boolean {
 # + value - Value to compare the property (or code) against, via `matcher`
 # + textFilter - Optional case-insensitive substring filter applied to concept display text
 # + matcher - Comparator function used to test the property/code value against `value`
+# + exactMatch - Whether `matcher` tests exact equality; lets a filter on `code` be resolved as a SQL predicate rather than by scanning every concept
 # + return - Matching concepts as `r4:ValueSetExpansionContains` entries
 isolated function filterConceptsByProperty(int codeSystemId, string property, string value, string? textFilter,
-        isolated function (string actual, string target) returns boolean matcher)
+        isolated function (string actual, string target) returns boolean matcher, boolean exactMatch = false)
     returns r4:ValueSetExpansionContains[] {
     r4:ValueSetExpansionContains[] members = [];
 
     sql:ParameterizedQuery query = sql:queryConcat(escapeToQuery("codesystemCodeSystemId"), ` = ${codeSystemId}`);
-    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
-    store_h2:Concept[]|error dbConcepts = from store_h2:Concept c in conceptStream
-        select c;
-    if dbConcepts is error {
-        return members;
+
+    // `code` is a column, so an exact filter on it is a predicate rather than a
+    // scan. Every other property lives inside the serialized concept blob,
+    // which SQL can't reach - those still have to be read and tested here.
+    boolean codeMatchedInSql = property == "code" && exactMatch;
+    if codeMatchedInSql {
+        query = sql:queryConcat(query, ` AND `, escapeToQuery("code"), ` = ${value}`);
     }
 
-    foreach store_h2:Concept dbConcept in dbConcepts {
-        r4:CodeSystemConcept|error concept = byteToConcept(dbConcept.concept);
-        if concept is error {
-            continue;
-        }
+    string? inMemoryFilter = textFilter;
+    if textFilter is string && isPlainTextFilter(textFilter) {
+        query = sql:queryConcat(query, displayContainsFragment(escapeToQuery("display"), textFilter));
+        inMemoryFilter = ();
+    }
 
-        boolean matches = false;
-        if property == "code" {
-            matches = matcher(concept.code, value);
-        } else if concept.property is r4:CodeSystemConceptProperty[] {
-            foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
-                if prop.code != property {
-                    continue;
+    // Streamed rather than collected into a `store_h2:Concept[]` first: only the
+    // matching entries are held, not every concept in the CodeSystem.
+    stream<store_h2:Concept, persist:Error?> conceptStream = sClient->/concepts(store_h2:Concept, query);
+    error? iterationError = from store_h2:Concept dbConcept in conceptStream
+        do {
+            r4:CodeSystemConcept|error concept = byteToConcept(dbConcept.concept);
+            if concept is r4:CodeSystemConcept {
+                boolean matches = codeMatchedInSql;
+                if !matches && property == "code" {
+                    matches = matcher(concept.code, value);
+                } else if !matches && concept.property is r4:CodeSystemConceptProperty[] {
+                    foreach var prop in <r4:CodeSystemConceptProperty[]>concept.property {
+                        if prop.code == property {
+                            string? propValue = propertyValueAsString(prop);
+                            if propValue is string && matcher(propValue, value) {
+                                matches = true;
+                                break;
+                            }
+                        }
+                    }
                 }
-                string? propValue = propertyValueAsString(prop);
-                if propValue is string && matcher(propValue, value) {
-                    matches = true;
-                    break;
+                if matches && (inMemoryFilter is () || displayMatchesTextFilter(concept.display, inMemoryFilter)) {
+                    members.push({code: concept.code, display: concept.display, id: concept.id});
                 }
             }
-        }
-
-        if !matches {
-            continue;
-        }
-        if textFilter is string {
-            if concept.display is string
-            && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
-                continue;
-            }
-        }
-        members.push({code: concept.code, display: concept.display, id: concept.id});
+        };
+    if iterationError is error {
+        return members;
     }
 
     return members;

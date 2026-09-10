@@ -17,6 +17,8 @@ import terminology_service.store_h2;
 
 import ballerina/http;
 import ballerina/lang.runtime;
+import ballerina/persist;
+import ballerina/sql;
 import ballerina/test;
 import ballerinax/health.fhir.r4;
 import ballerinax/health.fhir.r4.international401;
@@ -1392,3 +1394,236 @@ isolated function registerConceptTwiceInOneTransaction(int closureTableId, int c
     }
 }
 
+
+// The windowed SQL path (expandWindowedInclude) and the in-memory path
+// (closureMembers) must select the same concepts for an `is-a` filter. They
+// can't be compared page-for-page, since only the windowed path has a defined
+// row order - so this asserts the properties that actually matter: the same
+// total, the same set of codes once every page has been walked, and no code
+// served on two pages.
+@test:Config {
+    dependsOn: [testAddValidCodeSystemJson],
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function closureWindowMatchesInMemoryExpansion() returns error? {
+    store_h2:CodeSystem codeSystem = check getStoreCodeSystemByURL("urn:oid:2.16.840.1.113883.6.238");
+    WindowedInclude fastPath = {
+        codeSystemId: codeSystem.codeSystemId,
+        codeSystemUrl: codeSystem.url,
+        anchorCode: "2133-7",
+        includeSelf: true
+    };
+
+    r4:ValueSetExpansionContains[] inMemoryMembers = closureMembers(fastPath.codeSystemId, "2133-7", true, ());
+    test:assertTrue(inMemoryMembers.length() > 1,
+            "Fixture must resolve the anchor plus at least one descendant for this comparison to prove anything");
+
+    string[] expectedCodes = [];
+    foreach r4:ValueSetExpansionContains entry in inMemoryMembers {
+        expectedCodes.push(entry.code ?: "");
+    }
+
+    // A page size of 1 forces every boundary to be exercised.
+    int pageSize = 1;
+    int offset = 0;
+    int reportedTotal = -1;
+    map<boolean> seenCodes = {};
+    while true {
+        [r4:ValueSetExpansionContains[], int] window = check expandWindowedInclude(fastPath, (), offset, pageSize);
+        if reportedTotal == -1 {
+            reportedTotal = window[1];
+        } else {
+            test:assertEquals(window[1], reportedTotal, "expansion.total must not drift between pages");
+        }
+        if window[0].length() == 0 {
+            break;
+        }
+        foreach r4:ValueSetExpansionContains entry in window[0] {
+            string code = entry.code ?: "";
+            test:assertFalse(seenCodes.hasKey(code), string `Code ${code} was served on more than one page`);
+            seenCodes[code] = true;
+            test:assertEquals(entry.system, codeSystem.url, "Windowed entries must carry their CodeSystem URL");
+        }
+        offset += pageSize;
+    }
+
+    test:assertEquals(reportedTotal, inMemoryMembers.length(),
+            "Windowed total must match the number of members the in-memory path finds");
+    test:assertEquals(seenCodes.keys().sort(), expectedCodes.sort(),
+            "Paging through the window must yield exactly the in-memory member set");
+}
+
+// The fast path is only ever an optimization, so the guard has to refuse every
+// compose it can't reproduce exactly. Each shape here would need work the
+// single windowed query can't do - intersecting two filters, de-duplicating
+// against a second include, or applying a regex the page query has no
+// equivalent for - and must fall through to the in-memory path instead.
+@test:Config {
+    groups: ["valueset", "expand_valueset", "failure_scenario"]
+}
+public function windowedIncludeFastPathRejectsUnsupportedShapes() {
+    r4:ValueSetComposeIncludeFilter isaFilter = {property: "concept", op: "is-a", value: "2133-7"};
+    string testSystem = "urn:oid:2.16.840.1.113883.6.238";
+
+    r4:ValueSet twoFilters = {
+        resourceType: "ValueSet",
+        status: "active",
+        compose: {
+            include: [
+                {
+                    system: testSystem,
+                    filter: [isaFilter, {property: "concept", op: "descendent-of", value: "2135-2"}]
+                }
+            ]
+        }
+    };
+    test:assertTrue(windowedIncludeFastPath(twoFilters, [], ()) is (),
+            "Two filters on one include have to be intersected, which the windowed query can't do");
+
+    r4:ValueSet twoIncludes = {
+        resourceType: "ValueSet",
+        status: "active",
+        compose: {
+            include: [
+                {system: testSystem, filter: [isaFilter]},
+                {system: testSystem, filter: [{property: "concept", op: "is-a", value: "2135-2"}]}
+            ]
+        }
+    };
+    test:assertTrue(windowedIncludeFastPath(twoIncludes, [], ()) is (),
+            "Two includes have to be de-duplicated against each other before paging");
+
+    r4:ValueSet unsupportedOp = {
+        resourceType: "ValueSet",
+        status: "active",
+        compose: {include: [{system: testSystem, filter: [{property: "status", op: "=", value: "active"}]}]}
+    };
+    test:assertTrue(windowedIncludeFastPath(unsupportedOp, [], ()) is (),
+            "A property filter isn't resolvable in SQL - properties live inside the concept blob");
+
+    r4:ValueSet withConceptList = {
+        resourceType: "ValueSet",
+        status: "active",
+        compose: {include: [{system: testSystem, concept: [{code: "2133-7"}], filter: [isaFilter]}]}
+    };
+    test:assertTrue(windowedIncludeFastPath(withConceptList, [], ()) is (),
+            "An explicit concept list contributes members the closure join doesn't cover");
+
+    r4:ValueSet singleFilter = {
+        resourceType: "ValueSet",
+        status: "active",
+        compose: {include: [{system: testSystem, filter: [isaFilter]}]}
+    };
+    test:assertTrue(windowedIncludeFastPath(singleFilter, [], "a.*b") is (),
+            "A regex filter has no LIKE equivalent, so the page query couldn't apply it");
+}
+
+// The windowed path is worthless if the guard never actually recognizes a real
+// stored ValueSet, and every other test here would still pass in that case -
+// they'd just silently run the in-memory path. So: store the ordinary
+// "descendants of X" compose, prove windowedIncludeFastPath claims it, and prove
+// $expand over HTTP pages it correctly.
+@test:Config {
+    dependsOn: [testAddValidCodeSystemJson],
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function expandSingleIsaFilterTakesWindowedPath() returns error? {
+    json requestPayload = returnValueSetData("add-valid-valueset-isa-filter");
+    http:Response createResponse = check vsClient->post("/", requestPayload, {"Content-Type": FHIR_JSON});
+    test:assertEquals(createResponse.statusCode, 201);
+
+    // The guard reads the stored resource plus its persisted compose-include
+    // rows - a filtered include must persist none, which is what lets the
+    // windowed query stand in for the whole compose.
+    store_h2:ValueSet storedRow = check getStoreValueSetByURL("http://example.org/fhir/ValueSet/race-descendants-isa", "1.0.0");
+    r4:ValueSet storedVs = check byteToValueSet(storedRow.valueSet);
+    store_h2:ValueSetComposeInclude[] includeRows = check getValueSetComposeIncludesForTest(storedRow.valueSetId);
+    test:assertEquals(includeRows.length(), 0, "A filtered include must not persist a compose-include row");
+
+    WindowedInclude? recognized = windowedIncludeFastPath(storedVs, includeRows, ());
+    test:assertTrue(recognized is WindowedInclude,
+            "The single is-a compose must be recognized, otherwise $expand silently keeps materializing the full closure");
+    WindowedInclude fastPath = <WindowedInclude>recognized;
+    test:assertEquals(fastPath.anchorCode, "2133-7");
+    test:assertTrue(fastPath.includeSelf, "is-a includes the anchor itself");
+
+    int expectedTotal = closureMembers(fastPath.codeSystemId, "2133-7", true, ()).length();
+    test:assertTrue(expectedTotal > 1, "Fixture must resolve more than one member for paging to mean anything");
+
+    // Same ValueSet through the actual HTTP surface, one member per page.
+    http:Response firstPage = check vsClient->get("/$expand?url=http://example.org/fhir/ValueSet/race-descendants-isa&count=1&offset=0", ());
+    test:assertEquals(firstPage.statusCode, 200);
+    r4:ValueSet firstPageVs = check (check firstPage.getJsonPayload()).cloneWithType(r4:ValueSet);
+    r4:ValueSetExpansion firstExpansion = <r4:ValueSetExpansion>firstPageVs.expansion;
+    test:assertEquals(firstExpansion.total, expectedTotal, "Windowed expansion.total must count the whole closure, not the page");
+    test:assertEquals((firstExpansion.contains ?: []).length(), 1, "count=1 must return exactly one member");
+
+    http:Response secondPage = check vsClient->get("/$expand?url=http://example.org/fhir/ValueSet/race-descendants-isa&count=1&offset=1", ());
+    r4:ValueSet secondPageVs = check (check secondPage.getJsonPayload()).cloneWithType(r4:ValueSet);
+    r4:ValueSetExpansion secondExpansion = <r4:ValueSetExpansion>secondPageVs.expansion;
+    test:assertEquals(secondExpansion.total, expectedTotal, "total must not drift between pages");
+
+    string firstCode = (firstExpansion.contains ?: [])[0].code ?: "";
+    string secondCode = (secondExpansion.contains ?: [])[0].code ?: "";
+    test:assertNotEquals(firstCode, secondCode, "Consecutive offsets must return different members");
+}
+
+# Reads a ValueSet's persisted compose-include rows, so a test can check the
+# input `windowedIncludeFastPath` actually sees.
+#
+# + valueSetId - Internal id of the stored ValueSet
+# + return - The persisted compose-include rows, or an `error` if the query fails
+isolated function getValueSetComposeIncludesForTest(int valueSetId) returns store_h2:ValueSetComposeInclude[]|error {
+    sql:ParameterizedQuery includeQuery = sql:queryConcat(escapeToQuery("valuesetValueSetId"), ` = ${valueSetId}`);
+    stream<store_h2:ValueSetComposeInclude, persist:Error?> includeStream =
+        sClient->/valuesetcomposeincludes(store_h2:ValueSetComposeInclude, whereClause = includeQuery);
+    return from store_h2:ValueSetComposeInclude include in includeStream
+        select include;
+}
+
+// Same argument as expandSingleIsaFilterTakesWindowedPath, for the other shape
+// the windowed query covers: an unfiltered whole-CodeSystem include, which
+// otherwise reads and de-serializes every concept in the CodeSystem to build
+// one page.
+@test:Config {
+    dependsOn: [testAddValidValueSet, testAddValidCodeSystemJson],
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function expandWholeSystemIncludeTakesWindowedPath() returns error? {
+    store_h2:ValueSet storedRow = check getStoreValueSetByURL("http://example.org/fhir/ValueSet/cdcrec-all", "1.0.0");
+    r4:ValueSet storedVs = check byteToValueSet(storedRow.valueSet);
+
+    // saveValueSetCodeSystem runs in a strand the POST doesn't wait on, so the
+    // systemFlag row the guard needs may not be written yet.
+    store_h2:ValueSetComposeInclude[] includeRows = [];
+    int attempts = 0;
+    while attempts < 100 {
+        includeRows = check getValueSetComposeIncludesForTest(storedRow.valueSetId);
+        if includeRows.length() > 0 {
+            break;
+        }
+        runtime:sleep(0.05);
+        attempts += 1;
+    }
+    test:assertEquals(includeRows.length(), 1, "A whole-CodeSystem include persists exactly one compose-include row");
+    test:assertTrue(includeRows[0].systemFlag, "That row must be the systemFlag one");
+
+    WindowedInclude? recognized = windowedIncludeFastPath(storedVs, includeRows, ());
+    test:assertTrue(recognized is WindowedInclude,
+            "An unfiltered single-system compose must be recognized, otherwise $expand keeps reading the whole CodeSystem");
+    WindowedInclude window = <WindowedInclude>recognized;
+    test:assertTrue(window.anchorCode is (), "A whole-CodeSystem include has no closure anchor");
+
+    // Windowed result must agree with what the whole-system include would have
+    // produced in memory: every concept in the CodeSystem.
+    [r4:ValueSetExpansionContains[], int] firstMember = check expandWindowedInclude(window, (), 0, 1);
+    test:assertEquals(firstMember[0].length(), 1);
+    test:assertTrue(firstMember[1] > 1, "Fixture CodeSystem must hold more than one concept");
+
+    http:Response response = check vsClient->get("/$expand?url=http://example.org/fhir/ValueSet/cdcrec-all&count=1&offset=0", ());
+    test:assertEquals(response.statusCode, 200);
+    r4:ValueSet expanded = check (check response.getJsonPayload()).cloneWithType(r4:ValueSet);
+    r4:ValueSetExpansion expansion = <r4:ValueSetExpansion>expanded.expansion;
+    test:assertEquals(expansion.total, firstMember[1], "expansion.total must count the whole CodeSystem, not the page");
+    test:assertEquals((expansion.contains ?: []).length(), 1, "count=1 must return exactly one member");
+}

@@ -77,6 +77,70 @@ isolated function getRegexOperator() returns sql:ParameterizedQuery {
     }
 }
 
+// Escape character used with LIKE, so that a `%` or `_` typed by a client into
+// a `$expand` `filter` matches literally instead of acting as a wildcard. `!`
+// rather than the more usual `\`, which several dialects treat specially inside
+// string literals in its own right.
+const string LIKE_ESCAPE_CHAR = "!";
+
+// Characters that make an `$expand` `filter` value behave as a regular
+// expression rather than as literal text: the in-memory matching path
+// interpolates the value into a `.*<filter>.*` pattern, so a value containing
+// any of these has no equivalent LIKE predicate. See `isPlainTextFilter`.
+final readonly & string[] REGEX_METACHARACTERS = ["\\", ".", "[", "]", "{", "}", "(", ")", "*", "+", "?", "^", "$", "|"];
+
+# Reports whether a `$expand` `filter` value means the same thing as literal
+# text, i.e. contains nothing the regex path would interpret. Only such a value
+# can be pushed into SQL as a LIKE predicate without changing which concepts
+# match; anything else keeps the existing in-memory regex matching.
+#
+# + value - The client-supplied `filter` value
+# + return - `true` if the value holds no regex metacharacters
+isolated function isPlainTextFilter(string value) returns boolean {
+    foreach string metacharacter in REGEX_METACHARACTERS {
+        if value.includes(metacharacter) {
+            return false;
+        }
+    }
+    return true;
+}
+
+# Escapes LIKE wildcards in a literal so it matches as typed.
+#
+# + value - Literal text to be embedded in a LIKE pattern
+# + return - The text with `!`, `%` and `_` prefixed by `LIKE_ESCAPE_CHAR`
+isolated function escapeLikeWildcards(string value) returns string {
+    string escaped = "";
+    foreach string:Char character in value {
+        if character == LIKE_ESCAPE_CHAR || character == "%" || character == "_" {
+            escaped += LIKE_ESCAPE_CHAR;
+        }
+        escaped += character;
+    }
+    return escaped;
+}
+
+# Builds the SQL equivalent of the in-memory display filter used across the
+# `$expand` paths - a case-insensitive "display contains this text" test - so
+# that non-matching rows are dropped by the database instead of being read and
+# de-serialized first.
+#
+# The `IS NULL` arm is deliberate: the in-memory check is written as
+# `display is string && !isFullMatch(...)`, which leaves a concept that has no
+# display in the result rather than filtering it out. Keeping that here makes
+# this purely a performance change; whether a display-less concept *should*
+# survive a text filter is a separate question.
+#
+# + displayColumn - The (already escaped, optionally table-qualified) display column
+# + textFilter - Literal filter text; only valid for a value `isPlainTextFilter` accepts
+# + return - An ` AND (...)` fragment ready to append to a WHERE clause
+isolated function displayContainsFragment(sql:ParameterizedQuery displayColumn, string textFilter) returns sql:ParameterizedQuery {
+    string pattern = "%" + escapeLikeWildcards(textFilter.toUpperAscii()) + "%";
+    return sql:queryConcat(
+            ` AND (`, displayColumn, ` IS NULL OR UPPER(`, displayColumn, `) LIKE ${pattern} ESCAPE '`,
+            stringToParameterizedQuery(LIKE_ESCAPE_CHAR), `')`);
+}
+
 isolated function getLimitClause(int count, int offset) returns sql:ParameterizedQuery {
     if db_type == "mssql" {
         return `OFFSET ${offset} ROWS FETCH NEXT ${count} ROWS ONLY`;

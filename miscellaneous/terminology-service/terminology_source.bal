@@ -530,10 +530,8 @@ public isolated class TerminologySource {
                 foreach store_h2:Concept c in dbConcepts {
                     r4:CodeSystemConcept|error concept = byteToConcept(c.concept);
                     if concept is r4:CodeSystemConcept {
-                        if filter is string {
-                            if concept.display is string && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>concept.display).toUpperAscii()) {
-                                continue;
-                            }
+                        if filter is string && !displayMatchesTextFilter(concept.display, filter) {
+                            continue;
                         }
                         string dedupeKey = (includeSystemUrl ?: "") + "|" + concept.code;
                         if seenConceptKeys.hasKey(dedupeKey) {
@@ -716,8 +714,7 @@ public isolated class TerminologySource {
                         if storeConcept is store_h2:Concept {
                             r4:CodeSystemConcept|error decoded = byteToConcept(storeConcept.concept);
                             if decoded is r4:CodeSystemConcept {
-                                if filter is string && decoded.display is string
-                                        && !regexp:isFullMatch(re `.*${filter.toUpperAscii()}.*`, (<string>decoded.display).toUpperAscii()) {
+                                if filter is string && !displayMatchesTextFilter(decoded.display, filter) {
                                     continue;
                                 }
                                 string dedupeKey = includeSystem + "|" + decoded.code;
@@ -1074,7 +1071,9 @@ isolated function closureContainsPair(int ancestorId, int descendantId, int code
 
 # The in-memory form of the `$expand` display filter, kept for `filter` values that hold regex syntax - a literal-text value is pushed into SQL as a LIKE predicate by `displayContainsFragment` instead, so non-matching rows are never read.
 #
-# A concept with no display passes, matching the `display is string && !isFullMatch(...)` test this replaced. See `displayContainsFragment` for why that quirk is preserved rather than fixed here.
+# Written as a search rather than as `isFullMatch` against a `.*<filter>.*` pattern, because the two are not equivalent when a display contains a line terminator: `.` does not match one, so the wrapping `.*` cannot reach a match that sits on a later line, while SQL's `%` crosses them freely. Filtering on "active" would then find it in "Prefix Active" but not in "Prefix\nActive", and the same concept would be kept or dropped depending on whether its expansion happened to take the pushed-down path. `find` matches what LIKE does, and what a text filter is meant to mean.
+#
+# A concept with no display passes. See `displayContainsFragment` for why that quirk is preserved rather than fixed here.
 #
 # + display - The concept's display, if it has one
 # + textFilter - The request's `filter` value
@@ -1083,7 +1082,7 @@ isolated function displayMatchesTextFilter(string? display, string textFilter) r
     if display is () {
         return true;
     }
-    return regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, display.toUpperAscii());
+    return regexp:find(re `${textFilter.toUpperAscii()}`, display.toUpperAscii()) !is ();
 }
 
 # A `compose` shape that `$expand` can satisfy entirely in the database: exactly one `include`, naming one CodeSystem, with no explicit concept list and no nested `valueSet` references - either narrowed by exactly one `is-a`/`descendent-of` filter (the ordinary SNOMED "all descendants of X" ValueSet) or not narrowed at all (a whole-CodeSystem include). These are the only shapes needing neither cross-include de-duplication nor filter intersection, so the row set can be ordered, counted and windowed in SQL instead of being materialized in full and sliced afterwards.
@@ -1748,8 +1747,11 @@ isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boo
         if anchorConcept is r4:CodeSystemConcept {
             boolean passesFilter = true;
             if textFilter is string {
+                // Unlike every other filter site, a display-less anchor is
+                // dropped rather than kept - preserved here as-is, since it
+                // predates this and is a separate question.
                 passesFilter = anchorConcept.display is string
-                    && regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>anchorConcept.display).toUpperAscii());
+                    && displayMatchesTextFilter(anchorConcept.display, textFilter);
             }
             if passesFilter {
                 members.push({code: anchorConcept.code, display: anchorConcept.display, id: anchorConcept.id});
@@ -1790,11 +1792,8 @@ isolated function parentWalkDescendants(int codeSystemId, string anchorCode, boo
             if childConcept is error {
                 continue;
             }
-            if textFilter is string {
-                if childConcept.display is string
-                    && !regexp:isFullMatch(re `.*${textFilter.toUpperAscii()}.*`, (<string>childConcept.display).toUpperAscii()) {
-                    continue;
-                }
+            if textFilter is string && !displayMatchesTextFilter(childConcept.display, textFilter) {
+                continue;
             }
             members.push({code: childConcept.code, display: childConcept.display, id: childConcept.id});
         }

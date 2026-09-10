@@ -1627,3 +1627,44 @@ public function expandWholeSystemIncludeTakesWindowedPath() returns error? {
     test:assertEquals(expansion.total, firstMember[1], "expansion.total must count the whole CodeSystem, not the page");
     test:assertEquals((expansion.contains ?: []).length(), 1, "count=1 must return exactly one member");
 }
+
+// A text filter must select the same concepts whether it was pushed into SQL as
+// a LIKE predicate or applied in memory. The two disagreed on displays holding a
+// line terminator: LIKE's % crosses one, but the in-memory check used to wrap
+// the filter in `.*`, and `.` does not match a line terminator - so "active"
+// found a match in "Prefix Active" but not in "Prefix\nActive", and a concept
+// was kept or dropped depending on which path its expansion happened to take.
+@test:Config {
+    groups: ["valueset", "expand_valueset", "successful_scenario"]
+}
+public function displayFilterMatchesAcrossLineTerminators() {
+    // The case that regressed: the match sits after a newline, so the in-memory
+    // check has to reach across it exactly as LIKE '%ACTIVE%' does.
+    test:assertTrue(displayMatchesTextFilter("Prefix\nActive", "active"),
+            "A filter must match a display whose matching text follows a line terminator");
+    test:assertTrue(displayMatchesTextFilter("Prefix\r\nActive", "active"),
+            "The same must hold for a CRLF display");
+    test:assertTrue(displayMatchesTextFilter("Prefix Active", "active"),
+            "The ordinary single-line case must keep working");
+
+    // A filter that itself spans lines still has to match literally, and still
+    // has to be rejected when the display doesn't contain it.
+    test:assertTrue(displayMatchesTextFilter("Alpha\nBeta", "alpha\nbeta"),
+            "A filter containing a line terminator must match a display containing it");
+    test:assertFalse(displayMatchesTextFilter("Alpha Beta", "alpha\nbeta"),
+            "A filter containing a line terminator must not match a display without one");
+
+    // Non-matches must stay non-matches - `find` is a search, not a match-all.
+    test:assertFalse(displayMatchesTextFilter("Prefix\nRetired", "active"),
+            "A display that doesn't contain the filter must still be dropped");
+
+    // A concept with no display passes, unchanged by the switch to `find`.
+    test:assertTrue(displayMatchesTextFilter((), "active"),
+            "A concept with no display is kept, matching displayContainsFragment's IS NULL arm");
+
+    // isPlainTextFilter admits CR/LF, so such a filter is pushed into SQL. That
+    // is only sound while the in-memory form agrees with LIKE, which is what the
+    // assertions above pin down.
+    test:assertTrue(isPlainTextFilter("alpha\nbeta"),
+            "A filter containing only a line terminator holds no regex syntax");
+}

@@ -125,11 +125,12 @@ isolated function escapeLikeWildcards(string value) returns string {
 # that non-matching rows are dropped by the database instead of being read and
 # de-serialized first.
 #
-# The `IS NULL` arm is deliberate: the in-memory check is written as
-# `display is string && !isFullMatch(...)`, which leaves a concept that has no
-# display in the result rather than filtering it out. Keeping that here makes
-# this purely a performance change; whether a display-less concept *should*
-# survive a text filter is a separate question.
+# The `IS NULL` arm is deliberate: `displayMatchesTextFilter`, the in-memory form
+# of this test, leaves a concept that has no display in the result rather than
+# filtering it out. Keeping that here makes this purely a performance change;
+# whether a display-less concept *should* survive a text filter is a separate
+# question. The two must agree in every other respect too - see that function on
+# why it searches rather than matching against a `.*<filter>.*` pattern.
 #
 # + displayColumn - The (already escaped, optionally table-qualified) display column
 # + textFilter - Literal filter text; only valid for a value `isPlainTextFilter` accepts

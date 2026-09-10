@@ -364,37 +364,42 @@ isolated function postProcessExpansion(r4:ValueSet vs, r4:ValueSet? sourceVs, ma
         }
     }
 
-    if csUrl is string {
-        foreach int i in 0 ..< contains.length() {
-            if contains[i].system is () {
-                contains[i].system = <r4:uri>csUrl;
+    // Resolve flags from each entry's own system when it has one - a mixed-system
+    // expansion leaves csUrl unset above, but every entry is already
+    // tagged with its own system by then, so gating this whole loop on a single
+    // uniform csUrl would silently skip abstract/inactive/property backfill for
+    // every entry whenever more than one system is involved. csUrl is only used
+    // here to back-fill a missing per-entry system, never to override one.
+    foreach int i in 0 ..< contains.length() {
+        if contains[i].system is () && csUrl is string {
+            contains[i].system = <r4:uri>csUrl;
+        }
+
+        r4:uri? entrySystem = contains[i].system;
+        r4:code? entryCode = contains[i].code;
+        if entrySystem is r4:uri && entryCode is r4:code {
+            [boolean, boolean] flags = getConceptFlags(entrySystem, entryCode);
+            if flags[0] {
+                contains[i].'abstract = true;
+            }
+            if flags[1] {
+                contains[i].inactive = true;
             }
 
-            r4:code? entryCode = contains[i].code;
-            if entryCode is r4:code {
-                [boolean, boolean] flags = getConceptFlags(<r4:uri>csUrl, entryCode);
-                if flags[0] {
-                    contains[i].'abstract = true;
-                }
-                if flags[1] {
-                    contains[i].inactive = true;
-                }
-
-                // R4 has no native `expansion.contains.property` element (added in R5) - represent
-                // it via the documented R4<->R5 cross-version extension instead:
-                // https://hl7.org/fhir/uv/tx-ecosystem/r4.html
-                string? statusPropertyValue = getConceptStatusPropertyValue(<r4:uri>csUrl, entryCode);
-                if statusPropertyValue is string {
-                    r4:CodeExtension codeSubExtension = {url: "code", valueCode: "status"};
-                    r4:CodeExtension valueSubExtension = {url: "value", valueCode: <r4:code>statusPropertyValue};
-                    r4:ExtensionExtension propertyExtension = {
-                        url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.contains.property",
-                        extension: [codeSubExtension, valueSubExtension]
-                    };
-                    r4:Extension[] entryExtensions = contains[i].extension ?: [];
-                    entryExtensions.push(propertyExtension);
-                    contains[i].extension = entryExtensions;
-                }
+            // R4 has no native `expansion.contains.property` element (added in R5) - represent
+            // it via the documented R4<->R5 cross-version extension instead:
+            // https://hl7.org/fhir/uv/tx-ecosystem/r4.html
+            string? statusPropertyValue = getConceptStatusPropertyValue(entrySystem, entryCode);
+            if statusPropertyValue is string {
+                r4:CodeExtension codeSubExtension = {url: "code", valueCode: "status"};
+                r4:CodeExtension valueSubExtension = {url: "value", valueCode: <r4:code>statusPropertyValue};
+                r4:ExtensionExtension propertyExtension = {
+                    url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.contains.property",
+                    extension: [codeSubExtension, valueSubExtension]
+                };
+                r4:Extension[] entryExtensions = contains[i].extension ?: [];
+                entryExtensions.push(propertyExtension);
+                contains[i].extension = entryExtensions;
             }
         }
     }

@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -197,6 +197,9 @@ final r4:ResourceAPIConfig valueSetApiConfig = {
         {
             name: "expand",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -332,6 +335,9 @@ final r4:ResourceAPIConfig valueSetApiConfig = {
         {
             name: "validate-code",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -597,6 +603,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "lookup",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -652,6 +661,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "validate-code",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -722,6 +734,9 @@ final r4:ResourceAPIConfig codeSystemApiConfig = {
         {
             name: "subsumes",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             additionalProperties: {
                 meta: {
                     operationLevels: [
@@ -1046,6 +1061,9 @@ final r4:ResourceAPIConfig conceptMapApiConfig = {
         {
             name: "translate",
             active: true,
+            // TEMPORARY (api-conformance): tolerate unknown operation params (e.g. the
+            // test runner's "uuid", or "sourceSystem"). See conformance_shim.bal.
+            preProcessor: lenientOperationPreProcessor,
             parameters: [
                 {
                     name: "url",
@@ -1139,3 +1157,4 @@ final r4:ResourceAPIConfig conceptMapApiConfig = {
     serverConfig: (),
     authzConfig: ()
 };
+

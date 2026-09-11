@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -13,153 +13,209 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+import ballerina/file;
+import ballerina/regex;
 import ballerinax/health.fhir.r4;
 
 public const string FHIR_LOINC_FILE_NAME = "/loinc-codesystem.json";
-const string LOINC_CSV_FILE_PATH = "/LoincTable/Loinc.csv";
 
-// Mapping function
-isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts) returns r4:CodeSystemConcept[] {
+# Finds a directory with the given exact name anywhere under `dirPath`, checking immediate children first, then recursing into subdirectories. LOINC releases distribute LoincTable/ and AccessoryFiles/PartFile/ either bare at the zip root, or wrapped in the release folder LOINC ships them in (e.g. "Loinc_2.82/"), so this tolerates either layout without the caller needing to know which.
+#
+# + dirPath - The directory to search under
+# + targetName - The exact directory name to look for
+# + return - The absolute path of the matching directory, `()` if none was found, or an `error` if a directory could not be read
+isolated function findDirNamed(string dirPath, string targetName) returns string?|error {
+    boolean exists = check file:test(dirPath, file:EXISTS);
+    if !exists {
+        return ();
+    }
+    file:MetaData[] entries = check file:readDir(dirPath);
+    foreach file:MetaData entry in entries {
+        if entry.dir && getLoincBaseName(entry.absPath) == targetName {
+            return entry.absPath;
+        }
+    }
+    foreach file:MetaData entry in entries {
+        if entry.dir {
+            string? nested = check findDirNamed(entry.absPath, targetName);
+            if nested is string {
+                return nested;
+            }
+        }
+    }
+    return ();
+}
+
+# Returns the final path segment (file or directory name) of the given path, splitting on either forward or backward slashes.
+#
+# + path - The file or directory path
+# + return - The last segment of the path
+isolated function getLoincBaseName(string path) returns string {
+    string[] parts = regex:split(path, "[\\\\/]");
+    return parts[parts.length() - 1];
+}
+
+# Converts LOINC concepts into FHIR `CodeSystemConcept` entries, resolving each concept's display, designations, and axis properties from the Part File index.
+#
+# + loincConcepts - The LOINC concepts to convert, or `()` for an empty result
+# + partIndex - LoincNumber -> {axis: LoincPartRef} index used to resolve LP-code properties
+# + return - The converted `CodeSystemConcept` array
+isolated function LoincConceptToR4Concept(LoincConcept[]? loincConcepts, map<map<LoincPartRef>> partIndex) returns r4:CodeSystemConcept[] {
     if loincConcepts is null {
         return [];
     }
 
     r4:CodeSystemConcept[] r4Concepts = [];
     foreach LoincConcept loinc in loincConcepts {
+        // LONG_COMMON_NAME is the human-readable clinical display (e.g. "Hospice care
+        // Note"); COMPONENT is just one axis of the 6-part LOINC name (e.g. "Note") and
+        // is meaningless as a display on its own. Fall back to COMPONENT only when
+        // LONG_COMMON_NAME is absent.
+        string? longCommonName = loinc?.LONG_COMMON_NAME;
+        string display = longCommonName is string && longCommonName != "" ? longCommonName : loinc.COMPONENT;
+
+        map<LoincPartRef> parts = partIndex[loinc.LOINC_NUM] ?: {};
         r4:CodeSystemConcept concept = {
             code: loinc.LOINC_NUM,
-            display: loinc.COMPONENT,
-            property: getProperties(loinc)
+            display: display,
+            designation: getDesignations(loinc),
+            property: getProperties(loinc, parts)
         };
         r4Concepts.push(concept);
     }
     return r4Concepts;
 }
 
-// Function to extract all properties dynamically from a LoincConcept
-isolated function getProperties(LoincConcept loinc) returns r4:CodeSystemConceptProperty[] {
+# Builds the designation array for a LOINC concept from its LONG_COMMON_NAME, SHORTNAME, and CONSUMER_NAME fields, tagging each with its LOINC field name as the designation's use.code so a `$lookup` consumer can tell which variant (long common name, short name, consumer-friendly name) a given entry is.
+#
+# + loinc - The LOINC concept to build designations for
+# + return - The concept's designations, one per non-empty name variant
+isolated function getDesignations(LoincConcept loinc) returns r4:CodeSystemConceptDesignation[] {
+    r4:CodeSystemConceptDesignation[] designations = [];
+
+    string? longCommonName = loinc?.LONG_COMMON_NAME;
+    if longCommonName is string && longCommonName != "" {
+        designations.push({
+            language: "en-US",
+            value: longCommonName,
+            use: {system: "http://loinc.org", code: "LONG_COMMON_NAME"}
+        });
+    }
+
+    string? shortName = loinc?.SHORTNAME;
+    if shortName is string && shortName != "" {
+        designations.push({
+            language: "en-US",
+            value: shortName,
+            use: {system: "http://loinc.org", code: "SHORTNAME"}
+        });
+    }
+
+    string? consumerName = loinc?.CONSUMER_NAME;
+    if consumerName is string && consumerName != "" {
+        designations.push({
+            language: "en-US",
+            value: consumerName,
+            use: {system: "http://loinc.org", code: "CONSUMER_NAME"}
+        });
+    }
+
+    return designations;
+}
+
+# Pushes one LOINC axis property onto the given array, preferring the Part File's resolved LP-code and falling back to the raw CSV text when no Part File entry is available. Omitted entirely when neither is available.
+#
+# + properties - The property array to append to
+# + code - The property code to use (e.g. "PROPERTY", "TIME_ASPCT")
+# + rawValue - The raw CSV value for this axis, used only when `part` is `()`
+# + part - The resolved `LoincPartRef` for this axis, or `()` if the Part File didn't resolve one
+isolated function pushAxisProperty(r4:CodeSystemConceptProperty[] properties, string code, string? rawValue, LoincPartRef? part) {
+    if part is LoincPartRef {
+        properties.push({code: code, valueCode: part.partNumber});
+    } else if rawValue is string && rawValue != "" {
+        properties.push({code: code, valueString: rawValue});
+    }
+}
+
+# Pushes one plain string-valued LOINC property onto the given array, omitted when the value is `()` or empty.
+#
+# + properties - The property array to append to
+# + code - The property code to use (e.g. "CLASSTYPE", "FORMULA")
+# + value - The raw CSV value for this field
+isolated function pushStringProperty(r4:CodeSystemConceptProperty[] properties, string code, string? value) {
+    if value is string && value != "" {
+        properties.push({code: code, valueString: value});
+    }
+}
+
+# Extracts all FHIR `CodeSystemConcept` properties for a LOINC concept: the six LP-code axes (falling back to raw CSV text when unresolved), STATUS and its derived lowercase "status" property, and every other non-empty LOINC field.
+#
+# + loinc - The LOINC concept to extract properties from
+# + parts - The resolved `LoincPartRef` map for this concept's axes, keyed by axis name
+# + return - The concept's properties
+isolated function getProperties(LoincConcept loinc, map<LoincPartRef> parts) returns r4:CodeSystemConceptProperty[] {
     r4:CodeSystemConceptProperty[] properties = [];
 
-    // Manually map each field in the LoincConcept record
-    if loinc?.PROPERTY is string && loinc?.PROPERTY != "" {
-        properties.push({code: "PROPERTY", valueString: loinc?.PROPERTY});
+    // The six LOINC axes are themselves LOINC Part concepts (LP-codes). Emit the
+    // LP-code as valueCode when the Part File resolved one for this term; fall
+    // back to the raw CSV text (the old behaviour) when it didn't, e.g. the Part
+    // File wasn't supplied at upload, or this term/axis isn't covered by it.
+    // COMPONENT has no raw-text fallback since it was never emitted as a
+    // property before - it's only ever available via the Part File.
+    LoincPartRef? componentPart = parts["COMPONENT"];
+    if componentPart is LoincPartRef {
+        properties.push({code: "COMPONENT", valueCode: componentPart.partNumber});
     }
-    if loinc?.TIME_ASPCT is string && loinc?.TIME_ASPCT != "" {
-        properties.push({code: "TIME_ASPCT", valueString: loinc?.TIME_ASPCT});
+    pushAxisProperty(properties, "PROPERTY", loinc?.PROPERTY, parts["PROPERTY"]);
+    pushAxisProperty(properties, "TIME_ASPCT", loinc?.TIME_ASPCT, parts["TIME"]);
+    pushAxisProperty(properties, "SYSTEM", loinc?.SYSTEM, parts["SYSTEM"]);
+    pushAxisProperty(properties, "SCALE_TYP", loinc?.SCALE_TYP, parts["SCALE"]);
+    pushAxisProperty(properties, "METHOD_TYP", loinc?.METHOD_TYP, parts["METHOD"]);
+    pushAxisProperty(properties, "CLASS", loinc?.CLASS, parts["CLASS"]);
+    // Raw STATUS property (uppercase LOINC value, e.g. "ACTIVE") kept as-is -
+    // confirmed against a live tx.fhir.org $lookup that it stays alongside the
+    // derived one below, not replaced by it.
+    string? status = loinc?.STATUS;
+    pushStringProperty(properties, "STATUS", status);
+    // Also mapped to the shared "status" property code (lowercased value) so
+    // codesystemConceptsToParameters' existing inactive-derivation (status ==
+    // retired/deprecated) picks up deprecated LOINC codes the same way it
+    // already does for SNOMED. discouraged/trial are not inactive - those
+    // codes are still valid for use, just not preferred.
+    if status is string && status != "" {
+        properties.push({code: "status", valueCode: status.toLowerAscii()});
     }
-    if loinc?.SYSTEM is string && loinc?.SYSTEM != "" {
-        properties.push({code: "SYSTEM", valueString: loinc?.SYSTEM});
-    }
-    if loinc?.SCALE_TYP is string && loinc?.SCALE_TYP != "" {
-        properties.push({code: "SCALE_TYP", valueString: loinc?.SCALE_TYP});
-    }
-    if loinc?.METHOD_TYP is string && loinc?.METHOD_TYP != "" {
-        properties.push({code: "METHOD_TYP", valueString: loinc?.METHOD_TYP});
-    }
-    if loinc?.CLASS is string && loinc?.CLASS != "" {
-        properties.push({code: "CLASS", valueString: loinc?.CLASS});
-    }
-    if loinc?.VersionLastChanged is string && loinc?.VersionLastChanged != "" {
-        properties.push({code: "VersionLastChanged", valueString: loinc?.VersionLastChanged});
-    }
-    if loinc?.CHNG_TYPE is string && loinc?.CHNG_TYPE != "" {
-        properties.push({code: "CHNG_TYPE", valueString: loinc?.CHNG_TYPE});
-    }
-    if loinc?.DefinitionDescription is string && loinc?.DefinitionDescription != "" {
-        properties.push({code: "DefinitionDescription", valueString: loinc?.DefinitionDescription});
-    }
-    if loinc?.STATUS is string && loinc?.STATUS != "" {
-        properties.push({code: "STATUS", valueString: loinc?.STATUS});
-    }
-    if loinc?.CONSUMER_NAME is string && loinc?.CONSUMER_NAME != "" {
-        properties.push({code: "CONSUMER_NAME", valueString: loinc?.CONSUMER_NAME});
-    }
-    if loinc?.CLASSTYPE is string && loinc?.CLASSTYPE != "" {
-        properties.push({code: "CLASSTYPE", valueString: loinc?.CLASSTYPE});
-    }
-    if loinc?.FORMULA is string && loinc?.FORMULA != "" {
-        properties.push({code: "FORMULA", valueString: loinc?.FORMULA});
-    }
-    if loinc?.EXMPL_ANSWERS is string && loinc?.EXMPL_ANSWERS != "" {
-        properties.push({code: "EXMPL_ANSWERS", valueString: loinc?.EXMPL_ANSWERS});
-    }
-    if loinc?.SURVEY_QUEST_TEXT is string && loinc?.SURVEY_QUEST_TEXT != "" {
-        properties.push({code: "SURVEY_QUEST_TEXT", valueString: loinc?.SURVEY_QUEST_TEXT});
-    }
-    if loinc?.SURVEY_QUEST_SRC is string && loinc?.SURVEY_QUEST_SRC != "" {
-        properties.push({code: "SURVEY_QUEST_SRC", valueString: loinc?.SURVEY_QUEST_SRC});
-    }
-    if loinc?.UNITSREQUIRED is string && loinc?.UNITSREQUIRED != "" {
-        properties.push({code: "UNITSREQUIRED", valueString: loinc?.UNITSREQUIRED});
-    }
-    if loinc?.RELATEDNAMES2 is string && loinc?.RELATEDNAMES2 != "" {
-        properties.push({code: "RELATEDNAMES2", valueString: loinc?.RELATEDNAMES2});
-    }
-    if loinc?.SHORTNAME is string && loinc?.SHORTNAME != "" {
-        properties.push({code: "SHORTNAME", valueString: loinc?.SHORTNAME});
-    }
-    if loinc?.ORDER_OBS is string && loinc?.ORDER_OBS != "" {
-        properties.push({code: "ORDER_OBS", valueString: loinc?.ORDER_OBS});
-    }
-    if loinc?.HL7_FIELD_SUBFIELD_ID is string && loinc?.HL7_FIELD_SUBFIELD_ID != "" {
-        properties.push({code: "HL7_FIELD_SUBFIELD_ID", valueString: loinc?.HL7_FIELD_SUBFIELD_ID});
-    }
-    if loinc?.EXTERNAL_COPYRIGHT_NOTICE is string && loinc?.EXTERNAL_COPYRIGHT_NOTICE != "" {
-        properties.push({code: "EXTERNAL_COPYRIGHT_NOTICE", valueString: loinc?.EXTERNAL_COPYRIGHT_NOTICE});
-    }
-    if loinc?.EXAMPLE_UNITS is string && loinc?.EXAMPLE_UNITS != "" {
-        properties.push({code: "EXAMPLE_UNITS", valueString: loinc?.EXAMPLE_UNITS});
-    }
-    if loinc?.LONG_COMMON_NAME is string && loinc?.LONG_COMMON_NAME != "" {
-        properties.push({code: "LONG_COMMON_NAME", valueString: loinc?.LONG_COMMON_NAME});
-    }
-    if loinc?.EXAMPLE_UCUM_UNITS is string && loinc?.EXAMPLE_UCUM_UNITS != "" {
-        properties.push({code: "EXAMPLE_UCUM_UNITS", valueString: loinc?.EXAMPLE_UCUM_UNITS});
-    }
-    if loinc?.STATUS_REASON is string && loinc?.STATUS_REASON != "" {
-        properties.push({code: "STATUS_REASON", valueString: loinc?.STATUS_REASON});
-    }
-    if loinc?.STATUS_TEXT is string && loinc?.STATUS_TEXT != "" {
-        properties.push({code: "STATUS_TEXT", valueString: loinc?.STATUS_TEXT});
-    }
-    if loinc?.CHANGE_REASON_PUBLIC is string && loinc?.CHANGE_REASON_PUBLIC != "" {
-        properties.push({code: "CHANGE_REASON_PUBLIC", valueString: loinc?.CHANGE_REASON_PUBLIC});
-    }
-    if loinc?.COMMON_TEST_RANK is string && loinc?.COMMON_TEST_RANK != "" {
-        properties.push({code: "COMMON_TEST_RANK", valueString: loinc?.COMMON_TEST_RANK});
-    }
-    if loinc?.COMMON_ORDER_RANK is string && loinc?.COMMON_ORDER_RANK != "" {
-        properties.push({code: "COMMON_ORDER_RANK", valueString: loinc?.COMMON_ORDER_RANK});
-    }
-    if loinc?.HL7_ATTACHMENT_STRUCTURE is string && loinc?.HL7_ATTACHMENT_STRUCTURE != "" {
-        properties.push({code: "HL7_ATTACHMENT_STRUCTURE", valueString: loinc?.HL7_ATTACHMENT_STRUCTURE});
-    }
-    if loinc?.EXTERNAL_COPYRIGHT_LINK is string && loinc?.EXTERNAL_COPYRIGHT_LINK != "" {
-        properties.push({code: "EXTERNAL_COPYRIGHT_LINK", valueString: loinc?.EXTERNAL_COPYRIGHT_LINK});
-    }
-    if loinc?.PanelType is string && loinc?.PanelType != "" {
-        properties.push({code: "PanelType", valueString: loinc?.PanelType});
-    }
-    if loinc?.AskAtOrderEntry is string && loinc?.AskAtOrderEntry != "" {
-        properties.push({code: "AskAtOrderEntry", valueString: loinc?.AskAtOrderEntry});
-    }
-    if loinc?.AssociatedObservations is string && loinc?.AssociatedObservations != "" {
-        properties.push({code: "AssociatedObservations", valueString: loinc?.AssociatedObservations});
-    }
-    if loinc?.VersionFirstReleased is string && loinc?.VersionFirstReleased != "" {
-        properties.push({code: "VersionFirstReleased", valueString: loinc?.VersionFirstReleased});
-    }
-    if loinc?.ValidHL7AttachmentRequest is string && loinc?.ValidHL7AttachmentRequest != "" {
-        properties.push({code: "ValidHL7AttachmentRequest", valueString: loinc?.ValidHL7AttachmentRequest});
-    }
-    if loinc?.DisplayName is string && loinc?.DisplayName != "" {
-        properties.push({code: "DisplayName", valueString: loinc?.DisplayName});
-    }
+    pushStringProperty(properties, "CLASSTYPE", loinc?.CLASSTYPE);
+    pushStringProperty(properties, "FORMULA", loinc?.FORMULA);
+    pushStringProperty(properties, "EXMPL_ANSWERS", loinc?.EXMPL_ANSWERS);
+    pushStringProperty(properties, "SURVEY_QUEST_TEXT", loinc?.SURVEY_QUEST_TEXT);
+    pushStringProperty(properties, "SURVEY_QUEST_SRC", loinc?.SURVEY_QUEST_SRC);
+    pushStringProperty(properties, "UNITSREQUIRED", loinc?.UNITSREQUIRED);
+    pushStringProperty(properties, "RELATEDNAMES2", loinc?.RELATEDNAMES2);
+    pushStringProperty(properties, "ORDER_OBS", loinc?.ORDER_OBS);
+    pushStringProperty(properties, "HL7_FIELD_SUBFIELD_ID", loinc?.HL7_FIELD_SUBFIELD_ID);
+    pushStringProperty(properties, "EXTERNAL_COPYRIGHT_NOTICE", loinc?.EXTERNAL_COPYRIGHT_NOTICE);
+    pushStringProperty(properties, "EXAMPLE_UNITS", loinc?.EXAMPLE_UNITS);
+    pushStringProperty(properties, "EXAMPLE_UCUM_UNITS", loinc?.EXAMPLE_UCUM_UNITS);
+    pushStringProperty(properties, "STATUS_REASON", loinc?.STATUS_REASON);
+    pushStringProperty(properties, "STATUS_TEXT", loinc?.STATUS_TEXT);
+    pushStringProperty(properties, "CHANGE_REASON_PUBLIC", loinc?.CHANGE_REASON_PUBLIC);
+    pushStringProperty(properties, "HL7_ATTACHMENT_STRUCTURE", loinc?.HL7_ATTACHMENT_STRUCTURE);
+    pushStringProperty(properties, "PanelType", loinc?.PanelType);
+    pushStringProperty(properties, "AskAtOrderEntry", loinc?.AskAtOrderEntry);
+    pushStringProperty(properties, "AssociatedObservations", loinc?.AssociatedObservations);
+    pushStringProperty(properties, "ValidHL7AttachmentRequest", loinc?.ValidHL7AttachmentRequest);
 
     return properties;
 }
 
-isolated function createCodeSystemResource(LoincConcept[]? concepts, string? 'version) returns r4:CodeSystem|error {
+# Builds the combined LOINC `CodeSystem` FHIR resource, converting all concepts and setting the version when provided.
+#
+# + concepts - The LOINC concepts to include, or `()` for an empty CodeSystem
+# + partIndex - LoincNumber -> {axis: LoincPartRef} index used to resolve LP-code properties
+# + 'version - The CodeSystem version to set, or `()` to leave it unset
+# + return - The built `CodeSystem` resource, or an `error` if it could not be built
+isolated function createCodeSystemResource(LoincConcept[]? concepts, map<map<LoincPartRef>> partIndex, string? 'version) returns r4:CodeSystem|error {
     r4:CodeSystem codeSystem = {
         resourceType: "CodeSystem",
         id: "loinc",
@@ -172,7 +228,7 @@ isolated function createCodeSystemResource(LoincConcept[]? concepts, string? 've
         hierarchyMeaning: r4:CODE_HIERARCHYMEANING_IS_A
     };
 
-    codeSystem.concept = LoincConceptToR4Concept(concepts);
+    codeSystem.concept = LoincConceptToR4Concept(concepts, partIndex);
 
     if ('version is string) {
         codeSystem.version = 'version;
@@ -180,3 +236,4 @@ isolated function createCodeSystemResource(LoincConcept[]? concepts, string? 've
 
     return codeSystem;
 }
+

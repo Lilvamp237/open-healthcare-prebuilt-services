@@ -1,0 +1,15 @@
+{
+    "resourceType": "CodeSystem",
+    "id": "test-noversion-cs",
+    "url": "http://example.org/fhir/CodeSystem/test-noversion-cs",
+    "name": "TestNoVersionCodeSystem",
+    "title": "Test CodeSystem Without a Version",
+    "status": "active",
+    "content": "complete",
+    "concept": [
+      {
+        "code": "code1",
+        "display": "Code One"
+      }
+    ]
+  }

@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
 
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -17,8 +17,8 @@
 import ballerina/http;
 import ballerina/log;
 import ballerinax/health.fhir.r4;
-import ballerinax/health.fhir.r4.international401;
 import ballerinax/health.fhirr4;
+import ballerinax/health.fhir.r4.international401;
 
 listener http:Listener baseListener = check http:getDefaultListener();
 
@@ -189,7 +189,64 @@ service /fhir/r4/CodeSystem on new fhirr4:Listener(config = codeSystemApiConfig)
     isolated resource function post .(r4:FHIRContext ctx, r4:CodeSystem codeSystem) returns http:Response|r4:FHIRError {
         log:printDebug("FHIR Terminology request is received. Interaction: Add new CodeSystem");
 
-        _ =  check addCodeSystem(ctx, codeSystem);
+        _ = check addCodeSystem(ctx, codeSystem);
+
+        http:Response successResponse = new;
+        successResponse.statusCode = http:STATUS_CREATED;
+        return successResponse;
+    }
+}
+
+service /fhir/r4/ConceptMap on new fhirr4:Listener(config = conceptMapApiConfig) {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function get \$translate(r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Translate");
+
+        r4:Parameters result = check translateGet(ctx);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post \$translate(r4:FHIRContext ctx, r4:Parameters parameters) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Translate");
+
+        r4:Parameters result = check translatePost(ctx, parameters);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function get [string id](r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug(string `FHIR Terminology request is received. Interaction: ConceptMap Get with Id: ${id}`);
+
+        r4:ConceptMap conceptMap = check readConceptMapById(id);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(conceptMap, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function get .(r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: ConceptMap Search");
+
+        r4:Bundle conceptMap = check searchConceptMap(ctx);
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(conceptMap, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post .(r4:FHIRContext ctx, r4:ConceptMap conceptMap) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: Add new ConceptMap");
+
+        _ = check addConceptMap(ctx, conceptMap);
 
         http:Response successResponse = new;
         successResponse.statusCode = http:STATUS_CREATED;
@@ -266,14 +323,76 @@ service http:InterceptableService /fhir/r4/\$find\-code on baseListener {
     }
 }
 
+// TEMPORARY (branch: api-conformance): the HL7 validator probes GET [base]/$versions
+// on connect to discover which FHIR versions the server supports. The terminology
+// service did not expose it (returned 404 "Path not found: /$versions"), which the
+// validator logs as "Unable to interpret response from $versions". This endpoint
+// returns the standard Parameters response declaring FHIR R4 (4.0.1) support, and
+// supports both GET and POST so it can be referenced by the standard
+// http://hl7.org/fhir/OperationDefinition/CapabilityStatement-versions definition.
+service http:InterceptableService /fhir/r4/\$versions on baseListener {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function get .(http:RequestContext ctx, http:Request request) returns http:Response {
+        return buildVersionsResponse();
+    }
+
+    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response {
+        return buildVersionsResponse();
+    }
+}
+
+isolated function buildVersionsResponse() returns http:Response {
+    log:printDebug("FHIR Terminology request is received. Interaction: $versions");
+
+    http:Response response = new;
+    response.statusCode = http:STATUS_OK;
+    response.setHeader("content-type", "application/fhir+json");
+    json versions = {
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "version", "valueCode": "4.0"},
+            {"name": "default", "valueCode": "4.0"}
+        ]
+    };
+    response.setJsonPayload(versions);
+    return response;
+}
+
+// ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html)
+// is a base-level operation ([base]/$closure, not resource-scoped), same as
+// $upload/$find-code/$versions above - so it lives on baseListener rather than
+// the fhirr4:Listener-based CodeSystem/ValueSet services, and its handler
+// parses the request body itself instead of getting r4:Parameters for free.
+service http:InterceptableService /fhir/r4/\$closure on baseListener {
+
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
+
+    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: $closure");
+
+        r4:ConceptMap result = check closurePost(request);
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+}
+
 service http:InterceptableService /fhir/r4/metadata on baseListener {
 
-            public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
-                return [new FHIRResponseErrorInterceptor()];
-            }
+    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
+        return [new FHIRResponseErrorInterceptor()];
+    }
 
-        isolated resource function get .(http:RequestContext ctx, http:Request request, string? mode) returns http:Response|r4:FHIRError {
-        
+    isolated resource function get .(http:RequestContext ctx, http:Request request, string? mode) returns http:Response|r4:FHIRError {
+
         log:printDebug("FHIR Terminology request is received. Interaction: Metadata (CapabilityStatement)");
 
         http:Response response = new;
@@ -292,25 +411,25 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                 "date": "2025-06-17",
                 "publisher": "WSO2 LLC.",
                 "contact": [
-                {
-                    "name": "WSO2 LLC.",
-                    "telecom": [
                     {
-                        "system": "url",
-                        "value": "http://www.wso2.com"
+                        "name": "WSO2 LLC.",
+                        "telecom": [
+                            {
+                                "system": "url",
+                                "value": "http://www.wso2.com"
+                            }
+                        ]
                     }
-                    ]
-                }
                 ],
-                "description": "TerminologyCapabilities for the WSO2 Ballerina FHIR R4 Terminology Service (wso2/terminology_service v0.1.1), powered by the ballerinax/health.fhir.r4.terminology v7.0.1 library. The service persists CodeSystem and ValueSet resources in a relational database (PostgreSQL or H2). CodeSystem concepts are extracted into a separate table at ingest with a parentConceptId hierarchy, enabling efficient $lookup and DB-native $subsumes traversal. ConceptMap and $translate are defined in the library but are not implemented in this service tier — all ConceptMap interface methods are stubs.",
+                "description": "TerminologyCapabilities for the WSO2 Ballerina FHIR R4 Terminology Service (wso2/terminology_service v0.1.1), powered by the ballerinax/health.fhir.r4.terminology v7.0.1 library. The service persists CodeSystem, ValueSet, and ConceptMap resources in a relational database (PostgreSQL or H2). CodeSystem concepts are extracted into a separate table at ingest with a parentConceptId hierarchy, enabling efficient $lookup and DB-native $subsumes traversal. $closure is implemented, backed by the same closure table $subsumes uses, with its own client-named-table state tracked separately from the ConceptMap resource CRUD. $translate is implemented via the library's matching logic, backed by ConceptMap resource CRUD (create/read/search) against the same database.",
                 "kind": "instance",
                 "software": {
-                "name": "ballerinax/health.fhir.r4.terminology",
-                "version": "7.0.1"
+                    "name": "ballerinax/health.fhir.r4.terminology",
+                    "version": "7.0.1"
                 },
                 "implementation": {
-                "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9089",
-                "url": "http://localhost:9089/fhir/r4"
+                    "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9089",
+                    "url": "http://localhost:9089/fhir/r4"
                 },
                 "lockedDate": false,
                 "codeSearch": "all",
@@ -318,63 +437,67 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                     {
                         "uri": "http://loinc.org",
                         "version": [
-                        {
-                            "code": "*",
-                            "isDefault": false,
-                            "compositional": false
-                        }
+                            {
+                                "code": "*",
+                                "isDefault": false,
+                                "compositional": false
+                            }
                         ],
                         "subsumption": false
                     },
                     {
                         "uri": "http://snomed.info/sct",
                         "version": [
-                        {
-                            "code": "*",
+                            {
+                                "code": "*",
 
-                        "isDefault": false,
-                        "compositional": false
+                                "isDefault": false,
+                                "compositional": false
+                            }
+                        ],
+                        "subsumption": true
                     }
-                    ],
-                    "subsumption": true
-                }
                 ],
                 "expansion": {
-                "hierarchical": false,
-                "paging": true,
-                "incomplete": false,
-                "parameter": [
-                    {
-                    "name": "url",
-                    "documentation": "Canonical URL of the ValueSet to expand. Resolved via the database. Required when no ValueSet is provided inline and no {id} path parameter is used."
-                    },
-                    {
-                    "name": "valueSetVersion",
-                    "documentation": "Version of the ValueSet to expand when resolving by URL. Maps to the 'version' search parameter internally."
-                    },
-                    {
-                    "name": "filter",
-                    "documentation": "Case-insensitive substring match applied to concept display values during expansion. Filters allConcepts before pagination is applied."
-                    },
-                    {
-                    "name": "_count",
-                    "documentation": "Maximum number of concepts to return per page. Default: 20. Maximum enforced: 300 (returns HTTP 413 if exceeded)."
-                    },
-                    {
-                    "name": "_offset",
-                    "documentation": "Zero-based index of the first concept to return. Enables pagination of expansion results. The total field in the response always reflects the unfiltered full count."
-                    }
-                ],
-                "textFilter": null
+                    "hierarchical": false,
+                    "paging": true,
+                    "incomplete": false,
+                    "parameter": [
+                        {
+                            "name": "activeOnly",
+                            "documentation": "When true, drops inactive concepts from the expansion and recomputes expansion.total. Concepts are included by default unless the ValueSet's own compose says otherwise."
+                        },
+                        {
+                            "name": "url",
+                            "documentation": "Canonical URL of the ValueSet to expand. Resolved via the database. Required when no ValueSet is provided inline and no {id} path parameter is used."
+                        },
+                        {
+                            "name": "valueSetVersion",
+                            "documentation": "Version of the ValueSet to expand when resolving by URL. Maps to the 'version' search parameter internally."
+                        },
+                        {
+                            "name": "filter",
+                            "documentation": "Case-insensitive substring match applied to concept display values during expansion. Filters allConcepts before pagination is applied."
+                        },
+                        {
+                            "name": "_count",
+                            "documentation": "Maximum number of concepts to return per page. Default: 20. Maximum enforced: 300 (returns HTTP 413 if exceeded)."
+                        },
+                        {
+                            "name": "_offset",
+                            "documentation": "Zero-based index of the first concept to return. Enables pagination of expansion results. The total field in the response always reflects the unfiltered full count."
+                        }
+                    ],
+                    "textFilter": null
                 },
                 "validateCode": {
-                "translations": false
+                    "translations": false
                 },
                 "translation": {
-                "needsMap": true
+                    "needsMap": true
                 },
                 "closure": {
-                "translation": false
+                    "translation": false
                 }
             };
             response.setJsonPayload(terminologyCapabilities.toJson());
@@ -394,6 +517,21 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                         documentation: "FHIR Terminology Service REST interface.",
                         'resource: [
                             {
+                                'type: "CodeSystem",
+                                interaction: [
+                                    {code: "read"},
+                                    {code: "search-type"},
+                                    {code: "create"},
+                                    {code: "update"},
+                                    {code: "delete"},
+                                    {code: "patch"}
+                                ],
+                                operation: [
+                                    {name: "lookup", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup"},
+                                    {name: "subsumes", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes"}
+                                ]
+                            },
+                            {
                                 'type: "ValueSet",
                                 interaction: [
                                     {code: "read"},
@@ -409,20 +547,23 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                                 ]
                             },
                             {
-                                'type: "CodeSystem",
+                                'type: "ConceptMap",
                                 interaction: [
                                     {code: "read"},
                                     {code: "search-type"},
-                                    {code: "create"},
-                                    {code: "update"},
-                                    {code: "delete"},
-                                    {code: "patch"}
+                                    {code: "create"}
                                 ],
                                 operation: [
-                                    {name: "lookup", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup"},
-                                    {name: "subsumes", definition: "http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes"}
+                                    {name: "translate", definition: "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate"}
                                 ]
                             }
+                        ],
+                        // $versions is implemented (see the /$versions listener below) but
+                        // wasn't declared here - a base-level (not resource-scoped) operation.
+                        // $closure is likewise a base-level operation (see the /$closure listener below).
+                        operation: [
+                            {name: "versions", definition: "http://hl7.org/fhir/OperationDefinition/CapabilityStatement-versions"},
+                            {name: "closure", definition: "http://hl7.org/fhir/OperationDefinition/ConceptMap-closure"}
                         ]
                     }
                 ]
@@ -433,3 +574,4 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
     }
 
 }
+

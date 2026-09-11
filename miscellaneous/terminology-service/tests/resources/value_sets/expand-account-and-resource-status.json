@@ -14,19 +14,23 @@
         "contains": [
             {
                 "code": "active",
-                "display": "Active"
+                "display": "Active",
+                "system": "http://hl7.org/fhir/account-status"
             },
             {
                 "code": "inactive",
-                "display": "Inactive"
+                "display": "Inactive",
+                "system": "http://hl7.org/fhir/account-status"
             },
             {
                 "code": "active",
-                "display": "active"
+                "display": "active",
+                "system": "http://hl7.org/fhir/resource-status"
             },
             {
                 "code": "inactive",
-                "display": "inactive"
+                "display": "inactive",
+                "system": "http://hl7.org/fhir/resource-status"
             }
         ],
         "total": 4,

@@ -7,9 +7,9 @@ import ballerina/jballerina.java;
 import ballerina/persist;
 import ballerina/sql;
 import ballerinax/h2.driver as _;
-import ballerinax/postgresql.driver as _;
 import ballerinax/java.jdbc;
 import ballerinax/persist.sql as psql;
+import ballerinax/postgresql.driver as _;
 
 const CODE_SYSTEM = "codesystems";
 const CONCEPT = "concepts";

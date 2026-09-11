@@ -52,12 +52,14 @@
     "version": "4.0.1",
     "url": "http://hl7.org/fhir/ValueSet/account-status",
     "expansion": {
-        "contains": [    
+        "contains": [
             {
+                "system": "http://hl7.org/fhir/account-status",
                 "code": "active",
                 "display": "Active"
-            },   
+            },
             {
+                "system": "http://hl7.org/fhir/account-status",
                 "code": "inactive",
                 "display": "Inactive"
             }

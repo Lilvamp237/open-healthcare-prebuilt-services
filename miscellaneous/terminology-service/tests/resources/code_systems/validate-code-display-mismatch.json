@@ -6,6 +6,18 @@
             "valueBoolean": false
         },
         {
+            "name": "system",
+            "valueUri": "http://hl7.org/fhir/account-status"
+        },
+        {
+            "name": "code",
+            "valueCode": "inactive"
+        },
+        {
+            "name": "version",
+            "valueString": "4.0.1"
+        },
+        {
             "name": "display",
             "valueString": "Inactive"
         },

@@ -6,6 +6,14 @@
             "valueBoolean": true
         },
         {
+            "name": "system",
+            "valueUri": "http://example.org/fhir/CodeSystem/custom-inline"
+        },
+        {
+            "name": "code",
+            "valueCode": "custom-code"
+        },
+        {
             "name": "display",
             "valueString": "Custom Display"
         },

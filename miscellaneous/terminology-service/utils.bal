@@ -40,7 +40,7 @@ isolated function createNewTempDirectory() returns string {
 # Converts a validate-code result into the standard `$validate-code` response `Parameters`.
 #
 # + concept - The `Parameters` returned by a successful lookup, or the `FHIRError` raised when validation fails
-# + return - A `Parameters` resource with `result`, `display`, and `definition` populated, or the original `FHIRError` if it does not represent a "concept not found" failure
+# + return - A `Parameters` resource with `result`, `system`, `code`, `version`, `display`, and `definition` populated, or the original `FHIRError` if it does not represent a "concept not found" failure
 isolated function validationResultToParameters(r4:Parameters|r4:FHIRError concept) returns r4:Parameters|r4:FHIRError {
     r4:ParametersParameter[] params = [];
     if concept is r4:FHIRError {
@@ -51,11 +51,34 @@ isolated function validationResultToParameters(r4:Parameters|r4:FHIRError concep
         }
     } else {
         if (<r4:ParametersParameter[]>concept.'parameter).length() > 0 {
+            r4:ParametersParameter? systemPart = ();
+            r4:ParametersParameter? codePart = ();
+            r4:ParametersParameter? versionPart = ();
+            r4:ParametersParameter? displayPart = ();
+            r4:ParametersParameter? definitionPart = ();
             foreach var c in <r4:ParametersParameter[]>concept.'parameter {
                 _ = c.name == "name" ? params.push({name: "result", valueBoolean: true}) : "";
-                _ = c.name == "display" ? params.push(c) : "";
-                _ = c.name == "definition" ? params.push(c) : "";
+                if c.name == "system" {
+                    systemPart = c;
+                } else if c.name == "code" {
+                    codePart = c;
+                } else if c.name == "version" {
+                    versionPart = c;
+                } else if c.name == "display" {
+                    displayPart = c;
+                } else if c.name == "definition" {
+                    definitionPart = c;
+                }
             }
+            // Echo system/code/version/display/definition in the conventional
+            // $validate-code response order (result, system, code, version,
+            // display, definition), matching what most FHIR terminology
+            // servers (e.g. tx.fhir.org) return.
+            _ = systemPart is r4:ParametersParameter ? params.push(systemPart) : ();
+            _ = codePart is r4:ParametersParameter ? params.push(codePart) : ();
+            _ = versionPart is r4:ParametersParameter ? params.push(versionPart) : ();
+            _ = displayPart is r4:ParametersParameter ? params.push(displayPart) : ();
+            _ = definitionPart is r4:ParametersParameter ? params.push(definitionPart) : ();
         } else {
             params.push({name: "result", valueBoolean: false});
         }

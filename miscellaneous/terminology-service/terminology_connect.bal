@@ -901,7 +901,7 @@ public isolated function codeSystemValidateCodePost(r4:FHIRContext ctx, r4:Param
         result = lookupInInlineCodeSystem(effectiveCodeValue, <r4:CodeSystem>cs);
     }
 
-    return validateCodeResultToParameters(cs, result, 'version, display);
+    return validateCodeResultToParameters(cs, result, display);
 }
 
 # Handles `CodeSystem/$validate-code` invoked via GET (query-parameter form). Resolves the target CodeSystem by `id` (instance-level call) or the `url` query parameter (type-level call), validates the `code`/`version` pair, and converts the result into a standard `result`/`display`/`definition`(/`message`) validation `Parameters` response.
@@ -942,35 +942,25 @@ public isolated function codeSystemValidateCodeGet(r4:FHIRContext ctx, string? i
     r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError result =
             terminology:codeSystemLookUp(<r4:code>codeValue, cs = cs, version = 'version, terminology = terminology_source);
 
-    return validateCodeResultToParameters(cs, result, 'version, display);
+    return validateCodeResultToParameters(cs, result, display);
 }
 
-# Shared tail for `codeSystemValidateCodeGet`/`codeSystemValidateCodePost`: on a successful lookup, enriches the matched concept with parent/child hierarchy and attribute relationships (same as `$lookup`), converts it to a `$lookup`-shaped `Parameters` via `codesystemConceptsToParameters`, collapses that into the standard `result`/`display`/`definition` validate-code shape via `validationResultToParameters`, and finally applies `applyDisplayCheck`. On a failed lookup, converts the `FHIRError` directly via `validationResultToParameters`.
+# Shared tail for `codeSystemValidateCodeGet`/`codeSystemValidateCodePost`: converts a successful lookup to a `$lookup`-shaped `Parameters` via `codesystemConceptsToParameters`, collapses that into the standard `result`/`display`/`definition` validate-code shape via `validationResultToParameters`, and finally applies `applyDisplayCheck`. On a failed lookup, converts the `FHIRError` directly via `validationResultToParameters`.
 #
-# + cs - The CodeSystem the lookup was performed against, used for hierarchy enrichment and `$lookup`-style metadata
+# Deliberately does not compute parent/child hierarchy or attribute
+# relationships the way `codeSystemLookUpGet`/`Post` do for `$lookup` -
+# `validationResultToParameters` only reads `name`/`system`/`code`/`version`/`display`/`definition`, so that data would just be discarded.
+#
+# + cs - The CodeSystem the lookup was performed against, used for `$lookup`-style metadata
 # + result - The concept(s) found by `terminology:codeSystemLookUp`/`lookupInInlineCodeSystem`, or the `FHIRError` if none matched
-# + version - The CodeSystem version used for hierarchy lookups
 # + display - The caller-supplied `display` to check, or `()` if none was supplied
 # + return - The final validate-code `Parameters` response, or a `FHIRError` if `validationResultToParameters` can't handle `result`
-isolated function validateCodeResultToParameters(r4:CodeSystem cs, r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError result, string? version, string? display) returns r4:Parameters|r4:FHIRError {
+isolated function validateCodeResultToParameters(r4:CodeSystem cs, r4:CodeSystemConcept[]|r4:CodeSystemConcept|r4:FHIRError result, string? display) returns r4:Parameters|r4:FHIRError {
     if result is r4:FHIRError {
         return validationResultToParameters(result);
     }
 
-    r4:CodeSystemConcept matchedConcept = result is r4:CodeSystemConcept[] ? result[0] : result;
-    r4:code? effectiveCode = matchedConcept.code;
-    r4:CodeSystemConcept[] parentConcepts = [];
-    r4:CodeSystemConcept[] childConcepts = [];
-    ConceptAttributeRelationship[] attributeRelationships = [];
-    if cs.url is r4:uri && effectiveCode is r4:code {
-        [r4:CodeSystemConcept[], r4:CodeSystemConcept[]] hierarchy =
-                getConceptHierarchy(<r4:uri>cs.url, effectiveCode, version);
-        parentConcepts = hierarchy[0];
-        childConcepts = hierarchy[1];
-        attributeRelationships = getConceptAttributeRelationships(<r4:uri>cs.url, effectiveCode, version);
-    }
-
-    r4:Parameters lookupParameters = codesystemConceptsToParameters(result, cs, parentConcepts, childConcepts, attributeRelationships);
+    r4:Parameters lookupParameters = codesystemConceptsToParameters(result, cs);
     r4:Parameters|r4:FHIRError validated = validationResultToParameters(lookupParameters);
     if validated is r4:FHIRError {
         return validated;

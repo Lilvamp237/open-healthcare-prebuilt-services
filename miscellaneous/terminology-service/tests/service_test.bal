@@ -1816,3 +1816,5 @@ public function displayFilterMatchesAcrossLineTerminators() {
     test:assertTrue(isPlainTextFilter("alpha\nbeta"),
             "A filter containing only a line terminator holds no regex syntax");
 }
+
+

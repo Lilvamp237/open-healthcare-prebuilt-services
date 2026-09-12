@@ -256,3 +256,88 @@ public function testMultipleParentsEmittedAsSeparatePropertyEntries() {
     test:assertEquals(parentValues, ["29857009", "9972008"]);
 }
 
+@test:Config {
+    groups: ["unit", "validate_code_shape", "successful_scenario"]
+}
+public function testFindConceptInConceptListFindsNestedCode() {
+    r4:CodeSystemConcept[] concepts = [
+        {
+            code: "chapter1",
+            display: "Chapter 1",
+            concept: [
+                {code: "section1a", display: "Section 1a"},
+                {
+                    code: "section1b",
+                    display: "Section 1b",
+                    concept: [
+                        {code: "leaf1b1", display: "Leaf 1b1"}
+                    ]
+                }
+            ]
+        }
+    ];
+
+    r4:CodeSystemConcept? found = findConceptInConceptList(concepts, ["leaf1b1"]);
+    test:assertTrue(found is r4:CodeSystemConcept);
+    test:assertEquals((<r4:CodeSystemConcept>found).display, "Leaf 1b1");
+}
+
+@test:Config {
+    groups: ["unit", "validate_code_shape", "successful_scenario"]
+}
+public function testFindConceptInConceptListReturnsNilWhenNotFound() {
+    r4:CodeSystemConcept[] concepts = [
+        {code: "chapter1", display: "Chapter 1", concept: [{code: "section1a", display: "Section 1a"}]}
+    ];
+
+    test:assertEquals(findConceptInConceptList(concepts, ["does-not-exist"]), ());
+}
+
+@test:Config {
+    groups: ["unit", "validate_code_shape", "successful_scenario"]
+}
+public function testApplyDisplayCheckPassesOnExactMatch() {
+    r4:CodeSystemConcept concept = {code: "code1", display: "Display 1"};
+    r4:Parameters validated = {'parameter: [{name: "result", valueBoolean: true}]};
+
+    r4:Parameters checked = applyDisplayCheck(validated, concept, "Display 1");
+
+    test:assertEquals((<r4:ParametersParameter>findParam(checked, "result")).valueBoolean, true);
+    test:assertEquals(findParam(checked, "message"), ());
+}
+
+@test:Config {
+    groups: ["unit", "validate_code_shape", "successful_scenario"]
+}
+public function testApplyDisplayCheckPassesOnDesignationMatch() {
+    // A mismatch against the primary display is still a match if it equals a
+    // designation (synonym) value - synonyms are valid displays too.
+    r4:CodeSystemConcept concept = {
+        code: "code1",
+        display: "Display 1",
+        designation: [{value: "Synonym For Display 1"}]
+    };
+    r4:Parameters validated = {'parameter: [{name: "result", valueBoolean: true}]};
+
+    r4:Parameters checked = applyDisplayCheck(validated, concept, "Synonym For Display 1");
+
+    test:assertEquals((<r4:ParametersParameter>findParam(checked, "result")).valueBoolean, true);
+    test:assertEquals(findParam(checked, "message"), ());
+}
+
+@test:Config {
+    groups: ["unit", "validate_code_shape", "successful_scenario"]
+}
+public function testApplyDisplayCheckFlipsResultOnMismatch() {
+    r4:CodeSystemConcept concept = {code: "code1", display: "Display 1"};
+    r4:Parameters validated = {'parameter: [{name: "result", valueBoolean: true}]};
+
+    r4:Parameters checked = applyDisplayCheck(validated, concept, "Wrong Display");
+
+    test:assertEquals((<r4:ParametersParameter>findParam(checked, "result")).valueBoolean, false);
+    r4:ParametersParameter? messageParam = findParam(checked, "message");
+    test:assertTrue(messageParam is r4:ParametersParameter);
+    test:assertEquals((<r4:ParametersParameter>messageParam).valueString,
+            "Display \"Wrong Display\" does not match the expected display \"Display 1\"");
+}
+

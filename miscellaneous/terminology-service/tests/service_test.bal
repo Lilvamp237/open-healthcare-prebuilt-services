@@ -1371,7 +1371,7 @@ public function testUploadLoinc() returns error? {
     groups: ["concepts", "find_code", "successful_scenario"]
 }
 public function searchConcept1() returns error? {
-    http:Response response = check baseClient->get("/%24find-code?filter=active");
+    http:Response response = check baseClient->get("/$find-code?filter=active");
 
     json actualJson = check response.getJsonPayload();
     r4:Bundle actual = check actualJson.cloneWithType(r4:Bundle);
@@ -1384,7 +1384,7 @@ public function searchConcept1() returns error? {
     groups: ["concepts", "find_code", "successful_scenario"]
 }
 public function searchConcept2() returns error? {
-    http:Response response = check baseClient->get("/%24find-code?filter=active&_count=2&_offset=1");
+    http:Response response = check baseClient->get("/$find-code?filter=active&_count=2&_offset=1");
 
     json actualJson = check response.getJsonPayload();
     r4:Bundle actual = check actualJson.cloneWithType(r4:Bundle);
@@ -1397,7 +1397,7 @@ public function searchConcept2() returns error? {
     groups: ["concepts", "find_code", "failure_scenario"]
 }
 public function searchConcept3() returns error? {
-    http:Response response = check baseClient->get("/%24find-code");
+    http:Response response = check baseClient->get("/$find-code");
 
     test:assertEquals(response.statusCode, 400);
 }
@@ -1406,7 +1406,7 @@ public function searchConcept3() returns error? {
     groups: ["concepts", "find_code", "failure_scenario"]
 }
 public function searchConcept4() returns error? {
-    http:Response response = check baseClient->get("/%24find-code?filter=active&property=invalid");
+    http:Response response = check baseClient->get("/$find-code?filter=active&property=invalid");
 
     test:assertEquals(response.statusCode, 400);
 }
@@ -1421,7 +1421,7 @@ public function searchConceptPost1() returns error? {
     r4:ParametersParameter offsetParam = {name: "_offset", valueInteger: 1};
     r4:Parameters requestPayload = {'parameter: [filterParam, countParam, offsetParam]};
 
-    http:Response response = check baseClient->post("/%24find-code", requestPayload, {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$find-code", requestPayload, {"Content-Type": FHIR_JSON});
 
     json actualJson = check response.getJsonPayload();
     r4:Bundle actual = check actualJson.cloneWithType(r4:Bundle);
@@ -1437,7 +1437,7 @@ public function searchConceptPost_MissingFilter() returns error? {
     // Missing 'filter' parameter
     r4:ParametersParameter propertyParam = {name: "property", valueString: "display"};
     r4:Parameters requestPayload = {'parameter: [propertyParam]};
-    http:Response response = check baseClient->post("/%24find-code", requestPayload, {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$find-code", requestPayload, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Missing 'filter' parameter");
@@ -1451,7 +1451,7 @@ public function searchConceptPost_InvalidProperty() returns error? {
     r4:ParametersParameter filterParam = {name: "filter", valueString: "active"};
     r4:ParametersParameter propertyParam = {name: "property", valueString: "invalid"};
     r4:Parameters requestPayload = {'parameter: [filterParam, propertyParam]};
-    http:Response response = check baseClient->post("/%24find-code", requestPayload, {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$find-code", requestPayload, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid property value. Only 'display' or 'definition' are allowed.");
@@ -1462,7 +1462,7 @@ public function searchConceptPost_InvalidProperty() returns error? {
 }
 public function searchConceptPost_EmptyPayload() returns error? {
     // Empty payload
-    http:Response response = check baseClient->post("/%24find-code", (), {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$find-code", (), {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Empty request payload");
@@ -1474,7 +1474,7 @@ public function searchConceptPost_EmptyPayload() returns error? {
 public function searchConceptPost_InvalidPayload() returns error? {
     // Invalid payload (not a Parameters resource)
     json invalidPayload = {"foo": "bar"};
-    http:Response response = check baseClient->post("/%24find-code", invalidPayload, {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$find-code", invalidPayload, {"Content-Type": FHIR_JSON});
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Invalid request payload");
@@ -1503,7 +1503,7 @@ public function closurePost1() returns error? {
             {name: "concept", valueCoding: {system: "urn:oid:2.16.840.1.113883.6.238", code: "2135-2"}}
         ]
     };
-    http:Response response = check baseClient->post("/%24closure", requestPayload, {"Content-Type": FHIR_JSON});
+    http:Response response = check baseClient->post("/$closure", requestPayload, {"Content-Type": FHIR_JSON});
     test:assertEquals(response.statusCode, 200);
 
     json actualJson = check response.getJsonPayload();

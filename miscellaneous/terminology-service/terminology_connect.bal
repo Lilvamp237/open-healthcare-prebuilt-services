@@ -1929,14 +1929,26 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
     }
 }
 
+# Reads a single-valued operation search parameter out of a `FHIRContext`'s already-decoded request search parameters.
+#
+# + searchParameters - The request's search parameters, as returned by `r4:FHIRContext.getRequestSearchParameters()`
+# + name - The parameter name to look up
+# + return - The parameter's first value, or `()` if it wasn't supplied
+isolated function getSingleSearchParamValue(map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters, string name) returns string? {
+    r4:RequestSearchParameter[]? values = searchParameters[name];
+    return values is r4:RequestSearchParameter[] && values.length() > 0 ? values[0].value : ();
+}
+
 # Handles the custom `$find-code` operation invoked via GET (query-parameter form): searches concepts across (optionally) a given `system` by matching `filter` text against either the `display` or `definition` property, paginated by `_count`/`_offset`.
 #
-# + request - The incoming HTTP request, read for the `property`, `system`, `filter`, `_count`, and `_offset` query parameters
+# + ctx - The `FHIRContext` of the incoming request, read for the `property`, `system`, `filter`, `_count`, and `_offset` query parameters
 # + return - A search-result `Bundle` of matching concepts, or a `FHIRError` if `filter` is missing, `property` is invalid, or the search fails
-public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:FHIRError {
-    string property = request.getQueryParamValue("property") ?: DISPLAY;
-    string? system = request.getQueryParamValue("system");
-    string? filter = request.getQueryParamValue("filter");
+public isolated function findCodeGet(r4:FHIRContext ctx) returns r4:Bundle|r4:FHIRError {
+    map<r4:RequestSearchParameter[] & readonly> & readonly searchParameters = ctx.getRequestSearchParameters();
+
+    string property = getSingleSearchParamValue(searchParameters, "property") ?: DISPLAY;
+    string? system = getSingleSearchParamValue(searchParameters, "system");
+    string? filter = getSingleSearchParamValue(searchParameters, "filter");
     int count;
     int offset;
 
@@ -1949,8 +1961,8 @@ public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:
             check error("Invalid property value. Only 'display' or 'definition' are allowed.");
         }
 
-        string? countStr = request.getQueryParamValue("_count");
-        string? offsetStr = request.getQueryParamValue("_offset");
+        string? countStr = getSingleSearchParamValue(searchParameters, "_count");
+        string? offsetStr = getSingleSearchParamValue(searchParameters, "_offset");
 
         count = countStr is string ? check int:fromString(countStr) : terminology:TERMINOLOGY_SEARCH_DEFAULT_COUNT;
         offset = offsetStr is string ? check int:fromString(offsetStr) : 0;
@@ -1974,21 +1986,20 @@ public isolated function findCodeGet(http:Request request) returns r4:Bundle|r4:
 
 # Implements `ConceptMap/$closure` (https://hl7.org/fhir/R4/conceptmap-operation-closure.html): maintains a client-named, incrementally-growing subsumption closure table. Each call adds the given `concept`s to the named table and returns only the subsumption pairs not yet reported for that name - both a new concept's own ancestors (via concept_closure, the same table `$subsumes`/`$lookup` already use), and any case where the new concept turns out to be an ancestor of a concept added in an earlier call. An optional `version` parameter also resyncs everything reported since that version.
 #
-# + request - The incoming HTTP request, whose JSON body is a `Parameters` resource carrying `name`, zero or more `concept` codings, and an optional `version` to resync from
-# + return - A `ConceptMap` encoding the newly discovered (and, on resync, historical) subsumption pairs plus any unmatched concepts, or a `FHIRError` if the payload is invalid or `name` is missing
-public isolated function closurePost(http:Request request) returns r4:ConceptMap|r4:FHIRError {
-    json|http:ClientError jsonPayload = request.getJsonPayload();
-    if jsonPayload is http:ClientError {
-        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
-    }
-    r4:Parameters|error typedParams = jsonPayload.cloneWithType(r4:Parameters);
-    if typedParams is error {
-        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
-    }
-
+# + parameters - The `$closure` request body, a `Parameters` resource carrying `name`, zero or more `concept` codings, and an optional `version` to resync from
+# + return - A `ConceptMap` encoding the newly discovered (and, on resync, historical) subsumption pairs plus any unmatched concepts, or a `FHIRError` if `name` is missing
+public isolated function closurePost(r4:Parameters parameters) returns r4:ConceptMap|r4:FHIRError {
     string? name = ();
     r4:Coding[] concepts = [];
     string? resyncVersion = ();
+
+    // The framework-provided `parameters` isn't reliably typed at runtime for its
+    // nested 'parameter' array (see codeSystemLookUpPost for the same workaround) -
+    // round-trip it through JSON to get a genuinely-typed value before casting.
+    r4:Parameters|error typedParams = parameters.toJson().cloneWithType(r4:Parameters);
+    if typedParams is error {
+        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
 
     if typedParams.'parameter is r4:ParametersParameter[] {
         foreach var item in <r4:ParametersParameter[]>typedParams.'parameter {
@@ -2154,52 +2165,43 @@ public isolated function closurePost(http:Request request) returns r4:ConceptMap
 
 # Handles the custom `$find-code` operation invoked via POST (`Parameters` resource body): searches concepts across (optionally) a given `system` by matching a `filter` text parameter against either the `display` or `definition` property, paginated by `_count`/`_offset`.
 #
-# + request - The incoming HTTP request, whose JSON body is a `Parameters` resource carrying `property`, `system`, `filter`, `_count`, and `_offset`
-# + return - A search-result `Bundle` of matching concepts, or a `FHIRError` if the payload is invalid, `filter` is missing, or `property` is invalid
-public isolated function findCodePost(http:Request request) returns r4:Bundle|r4:FHIRError {
+# + parameters - The `$find-code` request body, a `Parameters` resource carrying `property`, `system`, `filter`, `_count`, and `_offset`
+# + return - A search-result `Bundle` of matching concepts, or a `FHIRError` if `filter` is missing or `property` is invalid
+public isolated function findCodePost(r4:Parameters parameters) returns r4:Bundle|r4:FHIRError {
     string property = DISPLAY;
     string? system = ();
     string? filter = ();
     int count = terminology:TERMINOLOGY_SEARCH_DEFAULT_COUNT;
     int offset = 0;
 
-    json|http:ClientError jsonPayload = request.getJsonPayload();
-    if jsonPayload is json {
-        r4:Parameters|error parameters = jsonPayload.cloneWithType(r4:Parameters);
-        if parameters is r4:Parameters && parameters.'parameter is r4:ParametersParameter[] {
-            foreach var item in <r4:ParametersParameter[]>parameters.'parameter {
-                match item.name {
-                    "property" => {
-                        property = item.valueString ?: DISPLAY;
-                    }
-                    "system" => {
-                        system = item.valueString ?: ();
-                    }
-                    "filter" => {
-                        filter = item.valueString ?: ();
-                    }
-                    "_count" => {
-                        count = item.valueInteger is int ? <int>item.valueInteger : terminology:TERMINOLOGY_SEARCH_DEFAULT_COUNT;
-                    }
-                    "_offset" => {
-                        offset = item.valueInteger is int ? <int>item.valueInteger : 0;
-                    }
+    // The framework-provided `parameters` isn't reliably typed at runtime for its
+    // nested 'parameter' array (see codeSystemLookUpPost for the same workaround) -
+    // round-trip it through JSON to get a genuinely-typed value before casting.
+    r4:Parameters|error typedParams = parameters.toJson().cloneWithType(r4:Parameters);
+    if typedParams is error {
+        return r4:createFHIRError("Invalid request payload", r4:ERROR, r4:INVALID_REQUIRED, httpStatusCode = http:STATUS_BAD_REQUEST);
+    }
+
+    if typedParams.'parameter is r4:ParametersParameter[] {
+        foreach var item in <r4:ParametersParameter[]>typedParams.'parameter {
+            match item.name {
+                "property" => {
+                    property = item.valueString ?: DISPLAY;
+                }
+                "system" => {
+                    system = item.valueString ?: ();
+                }
+                "filter" => {
+                    filter = item.valueString ?: ();
+                }
+                "_count" => {
+                    count = item.valueInteger is int ? <int>item.valueInteger : terminology:TERMINOLOGY_SEARCH_DEFAULT_COUNT;
+                }
+                "_offset" => {
+                    offset = item.valueInteger is int ? <int>item.valueInteger : 0;
                 }
             }
-        } else {
-            return r4:createFHIRError(
-                    "Invalid request payload",
-                    r4:ERROR,
-                    r4:INVALID_REQUIRED,
-                    cause = parameters is error ? parameters : (),
-                    httpStatusCode = http:STATUS_BAD_REQUEST);
         }
-    } else {
-        return r4:createFHIRError(
-                "Empty request payload",
-                r4:ERROR,
-                r4:INVALID_REQUIRED,
-                httpStatusCode = http:STATUS_BAD_REQUEST);
     }
 
     if filter is () {

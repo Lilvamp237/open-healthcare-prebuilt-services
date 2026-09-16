@@ -299,6 +299,52 @@ service /fhir/r4 on new fhirr4:Listener(config = apiConfig) {
         response.setPayload(result, FHIR_JSON);
         return response;
     }
+
+    // TEMPORARY (api-conformance): $find-code, $closure and $versions live here
+    // (as resource functions on this system-level service) rather than as their
+    // own http:InterceptableServices on baseListener - see the comment on
+    // apiConfig.operations in api_configs.bal for why.
+
+    isolated resource function get \$find\-code(r4:FHIRContext ctx) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: Find Code");
+
+        r4:Bundle result = check findCodeGet(ctx);
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post \$find\-code(r4:FHIRContext ctx, r4:Parameters parameters) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: Find Code (POST)");
+
+        r4:Bundle result = check findCodePost(parameters);
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function post \$closure(r4:FHIRContext ctx, r4:Parameters parameters) returns http:Response|r4:FHIRError {
+        log:printDebug("FHIR Terminology request is received. Interaction: $closure");
+
+        r4:ConceptMap result = check closurePost(parameters);
+
+        http:Response response = new;
+        response.statusCode = http:STATUS_OK;
+        response.setPayload(result, FHIR_JSON);
+        return response;
+    }
+
+    isolated resource function get \$versions(r4:FHIRContext ctx) returns http:Response {
+        return buildVersionsResponse();
+    }
+
+    isolated resource function post \$versions(r4:FHIRContext ctx, r4:Parameters parameters) returns http:Response {
+        return buildVersionsResponse();
+    }
 }
 
 service http:InterceptableService /fhir/r4/\$upload on baseListener {
@@ -324,57 +370,10 @@ service http:InterceptableService /fhir/r4/\$upload on baseListener {
     }
 }
 
-service http:InterceptableService /fhir/r4/\$find\-code on baseListener {
-
-    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
-        return [new FHIRResponseErrorInterceptor()];
-    }
-
-    isolated resource function get .(http:RequestContext ctx, http:Request request) returns http:Response|r4:FHIRError {
-        log:printDebug("FHIR Terminology request is received. Interaction: Find Code");
-
-        r4:Bundle result = check findCodeGet(request);
-
-        http:Response response = new;
-        response.statusCode = http:STATUS_OK;
-        response.setPayload(result, FHIR_JSON);
-        return response;
-    }
-
-    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response|r4:FHIRError {
-        log:printDebug("FHIR Terminology request is received. Interaction: Find Code (POST)");
-
-        r4:Bundle result = check findCodePost(request);
-
-        http:Response response = new;
-        response.statusCode = http:STATUS_OK;
-        response.setPayload(result, FHIR_JSON);
-        return response;
-    }
-}
-
 // TEMPORARY (branch: api-conformance): the HL7 validator probes GET [base]/$versions
-// on connect to discover which FHIR versions the server supports. The terminology
-// service did not expose it (returned 404 "Path not found: /$versions"), which the
-// validator logs as "Unable to interpret response from $versions". This endpoint
-// returns the standard Parameters response declaring FHIR R4 (4.0.1) support, and
-// supports both GET and POST so it can be referenced by the standard
-// http://hl7.org/fhir/OperationDefinition/CapabilityStatement-versions definition.
-service http:InterceptableService /fhir/r4/\$versions on baseListener {
-
-    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
-        return [new FHIRResponseErrorInterceptor()];
-    }
-
-    isolated resource function get .(http:RequestContext ctx, http:Request request) returns http:Response {
-        return buildVersionsResponse();
-    }
-
-    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response {
-        return buildVersionsResponse();
-    }
-}
-
+// on connect to discover which FHIR versions the server supports. This endpoint
+// returns the standard Parameters response declaring FHIR R4 (4.0.1) support.
+// Exposed as \$versions resource functions on the /fhir/r4 service above.
 isolated function buildVersionsResponse() returns http:Response {
     log:printDebug("FHIR Terminology request is received. Interaction: $versions");
 
@@ -393,27 +392,8 @@ isolated function buildVersionsResponse() returns http:Response {
 }
 
 // ConceptMap/$closure (https://hl7.org/fhir/R4/conceptmap-operation-closure.html)
-// is a base-level operation ([base]/$closure, not resource-scoped), same as
-// $upload/$find-code/$versions above - so it lives on baseListener rather than
-// the fhirr4:Listener-based CodeSystem/ValueSet services, and its handler
-// parses the request body itself instead of getting r4:Parameters for free.
-service http:InterceptableService /fhir/r4/\$closure on baseListener {
-
-    public function createInterceptors() returns [FHIRResponseErrorInterceptor] {
-        return [new FHIRResponseErrorInterceptor()];
-    }
-
-    isolated resource function post .(http:RequestContext ctx, http:Request request) returns http:Response|r4:FHIRError {
-        log:printDebug("FHIR Terminology request is received. Interaction: $closure");
-
-        r4:ConceptMap result = check closurePost(request);
-
-        http:Response response = new;
-        response.statusCode = http:STATUS_OK;
-        response.setPayload(result, FHIR_JSON);
-        return response;
-    }
-}
+// is a base-level operation ([base]/$closure, not resource-scoped). Exposed as
+// a \$closure resource function on the /fhir/r4 service above.
 
 service http:InterceptableService /fhir/r4/metadata on baseListener {
 

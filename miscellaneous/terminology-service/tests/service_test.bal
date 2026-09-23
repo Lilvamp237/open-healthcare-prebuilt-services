@@ -427,6 +427,75 @@ public function validateCodeCodeSystem14() returns error? {
 }
 
 @test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem15() returns error? {
+    // An inline CodeSystem with no url of its own (isInlineCodeSystem, no
+    // real url to compare against) still matches a systemless coding by code.
+    r4:CodeSystem inlineCs = {
+        resourceType: "CodeSystem",
+        status: "active",
+        content: "complete",
+        concept: [{code: "foo", display: "Foo"}]
+    };
+    r4:ParametersParameter csParam = {name: "codeSystem", 'resource: inlineCs};
+    r4:ParametersParameter codingParam = {name: "coding", valueCoding: {code: "foo"}};
+    r4:Parameters p = {'parameter: [csParam, codingParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:Parameters actual = check actualJson.cloneWithType(r4:Parameters);
+    test:assertEquals((<r4:ParametersParameter>findParam(actual, "result")).valueBoolean, true);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem16() returns error? {
+    // A coding naming an explicit (foreign) system must NOT match an inline
+    // CodeSystem that has no real url of its own - there's no legitimate way
+    // for the caller to have known the synthetic urn:uuid: url generated for
+    // it, so a code that happens to collide by value alone must not validate.
+    r4:CodeSystem inlineCs = {
+        resourceType: "CodeSystem",
+        status: "active",
+        content: "complete",
+        concept: [{code: "foo", display: "Foo"}]
+    };
+    r4:ParametersParameter csParam = {name: "codeSystem", 'resource: inlineCs};
+    r4:ParametersParameter codingParam = {name: "coding", valueCoding: {system: "http://example.org/other-system", code: "foo"}};
+    r4:Parameters p = {'parameter: [csParam, codingParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:Parameters actual = check actualJson.cloneWithType(r4:Parameters);
+    test:assertEquals((<r4:ParametersParameter>findParam(actual, "result")).valueBoolean, false);
+}
+
+@test:Config {
+    groups: ["codesystem", "validate_code_codesystem", "successful_scenario"]
+}
+public function validateCodeCodeSystem17() returns error? {
+    // An inline CodeSystem with no url of its own gets a synthetic
+    // urn:uuid: url internally (so the terminology library's non-null cast
+    // of cs.url doesn't panic) - but that fabricated identifier must never
+    // be echoed back to the caller as the response's "system" parameter,
+    // since the caller never supplied (or could have known) a real one.
+    r4:CodeSystem inlineCs = {
+        resourceType: "CodeSystem",
+        status: "active",
+        content: "complete",
+        concept: [{code: "foo", display: "Foo"}]
+    };
+    r4:ParametersParameter csParam = {name: "codeSystem", 'resource: inlineCs};
+    r4:ParametersParameter codingParam = {name: "coding", valueCoding: {code: "foo"}};
+    r4:Parameters p = {'parameter: [csParam, codingParam]};
+    http:Response response = check csClient->post("/$validate-code", p, {"Content-Type": FHIR_JSON});
+    json actualJson = check response.getJsonPayload();
+    r4:Parameters actual = check actualJson.cloneWithType(r4:Parameters);
+    test:assertEquals((<r4:ParametersParameter>findParam(actual, "result")).valueBoolean, true);
+    test:assertEquals(findParam(actual, "system"), ());
+}
+
+@test:Config {
     groups: ["codesystem", "subsume_codesystem", "successful_scenario"]
 }
 public function subsumeCodeSystem1() returns error? {
@@ -1466,6 +1535,31 @@ public function searchConceptPost_EmptyPayload() returns error? {
     json actualJson = check response.getJsonPayload();
     r4:OperationOutcome actual = check actualJson.cloneWithType(r4:OperationOutcome);
     test:assertEquals((<r4:CodeableConcept>actual.issue[0].details).text, "Empty request payload");
+}
+
+@test:Config {
+    groups: ["concepts", "find_code", "successful_scenario"]
+}
+public function searchConceptPost_SystemAsValueUri() returns error? {
+    // A "system" parameter is a FHIR uri, so a well-behaved client sends it as
+    // valueUri rather than valueString - it must still scope the search
+    // rather than silently falling through to an unscoped search. Unscoped,
+    // filter=active matches 3 concepts across two systems (see
+    // bundle-search-active.json); scoped to account-status it must match only
+    // the 1 concept that system actually has.
+    r4:ParametersParameter filterParam = {name: "filter", valueString: "active"};
+    r4:ParametersParameter systemParam = {name: "system", valueUri: "http://hl7.org/fhir/account-status"};
+    r4:Parameters requestPayload = {'parameter: [filterParam, systemParam]};
+
+    http:Response response = check baseClient->post("/$find-code", requestPayload, {"Content-Type": FHIR_JSON});
+
+    json actualJson = check response.getJsonPayload();
+    r4:Bundle actual = check actualJson.cloneWithType(r4:Bundle);
+    test:assertEquals(actual.total, 1);
+    r4:BundleEntry[] entries = actual.entry ?: [];
+    test:assertEquals(entries.length(), 1);
+    json entryResourceJson = check entries[0]?.'resource.cloneWithType(json);
+    test:assertEquals(check entryResourceJson.system, "http://hl7.org/fhir/account-status");
 }
 
 @test:Config {

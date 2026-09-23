@@ -911,7 +911,14 @@ public isolated function codeSystemValidateCodePost(r4:FHIRContext ctx, r4:Param
         result = lookupInInlineCodeSystem(effectiveCodeValue, <r4:CodeSystem>cs, requireSystemMatch = inlineCodeSystemHasRealUrl);
     }
 
-    return validateCodeResultToParameters(cs, result, display);
+    r4:CodeSystem responseCs = cs;
+    if isInlineCodeSystem && !inlineCodeSystemHasRealUrl {
+        r4:CodeSystem withoutSyntheticUrl = cs.clone();
+        withoutSyntheticUrl.url = ();
+        responseCs = withoutSyntheticUrl;
+    }
+
+    return validateCodeResultToParameters(responseCs, result, display);
 }
 
 # Handles `CodeSystem/$validate-code` invoked via GET (query-parameter form). Resolves the target CodeSystem by `id` (instance-level call) or the `url` query parameter (type-level call), validates the `code`/`version` pair, and converts the result into a standard `result`/`display`/`definition`(/`message`) validation `Parameters` response.
@@ -922,10 +929,10 @@ public isolated function codeSystemValidateCodePost(r4:FHIRContext ctx, r4:Param
 public isolated function codeSystemValidateCodeGet(r4:FHIRContext ctx, string? id = ()) returns r4:Parameters|r4:FHIRError {
     map<r4:RequestSearchParameter[] & readonly> & readonly searchParams = ctx.getRequestSearchParameters();
 
-    string? url = searchParams["url"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["url"])[0].value : ();
-    string? code = searchParams["code"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["code"])[0].value : ();
-    string? 'version = searchParams["version"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["version"])[0].value : ();
-    string? display = searchParams["display"] is r4:RequestSearchParameter[] ? (<r4:RequestSearchParameter[]>searchParams["display"])[0].value : ();
+    string? url = getSingleSearchParamValue(searchParams, "url");
+    string? code = getSingleSearchParamValue(searchParams, "code");
+    string? 'version = getSingleSearchParamValue(searchParams, "version");
+    string? display = getSingleSearchParamValue(searchParams, "display");
 
     r4:code? codeValue = code;
     if codeValue !is r4:code {
@@ -992,20 +999,14 @@ isolated function validateCodeResultToParameters(r4:CodeSystem cs, r4:CodeSystem
 # + return - The matching concept if found, or a `FHIRError` if no coding matches an entry in the CodeSystem
 isolated function lookupInInlineCodeSystem(r4:Coding|r4:CodeableConcept codeValue, r4:CodeSystem codeSystem, boolean requireSystemMatch = true) returns r4:CodeSystemConcept|r4:FHIRError {
     r4:code[] codesToCheck = [];
-    // Only consider a coding whose own system is unset or matches this
-    // CodeSystem's url - otherwise a code that happens to collide with one
-    // from a different system would wrongly validate against it. That check
-    // is skipped when requireSystemMatch is false, i.e. the inline CodeSystem
-    // never had a real url of its own to compare against (codeSystem.url is a
-    // synthetic urn:uuid: generated only for the null-safe terminology lookup).
     if codeValue is r4:Coding {
         r4:Coding coding = codeValue;
-        if coding.code is r4:code && (!requireSystemMatch || coding.system is () || coding.system == codeSystem.url) {
+        if coding.code is r4:code && (coding.system is () || (requireSystemMatch && coding.system == codeSystem.url)) {
             codesToCheck = [<r4:code>coding.code];
         }
     } else if codeValue is r4:CodeableConcept {
         foreach r4:Coding c in (codeValue.coding ?: []) {
-            if c.code is r4:code && (!requireSystemMatch || c.system is () || c.system == codeSystem.url) {
+            if c.code is r4:code && (c.system is () || (requireSystemMatch && c.system == codeSystem.url)) {
                 codesToCheck.push(<r4:code>c.code);
             }
         }
@@ -2189,7 +2190,7 @@ public isolated function findCodePost(r4:Parameters parameters) returns r4:Bundl
                     property = item.valueString ?: DISPLAY;
                 }
                 "system" => {
-                    system = item.valueString ?: ();
+                    system = item.valueUri ?: item.valueString;
                 }
                 "filter" => {
                     filter = item.valueString ?: ();

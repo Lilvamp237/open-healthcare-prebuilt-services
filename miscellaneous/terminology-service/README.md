@@ -76,7 +76,7 @@ The service exposes the following main endpoints under `/fhir/r4`:
 `POST /$upload` accepts a zip archive. Two things are required on the request:
 
 - `Content-Type: application/zip`
-- `x-terminology-type` header, set to `FHIR`, `LOINC`, or `SNOMED`
+- `x-terminology-type` header, set to `FHIR`, `LOINC`, `SNOMED`, or `ICD10`
 
 The header selects how the archive is interpreted. A missing or unrecognised value returns `400`.
 
@@ -96,7 +96,15 @@ Expects a SNOMED CT RF2 Snapshot release zip, containing the Concept, Descriptio
 
 - `snomed-version` (query parameter, optional) — RF2 release date as `YYYYMMDD`, recorded as the CodeSystem version.
 
-**The import runs in the background.** The request returns `201 Created` as soon as the archive is extracted, before the concepts are loaded. A full release takes several minutes; check the server logs for progress and for the completion summary.
+### ICD-10-CM
+
+Expects an ICD-10-CM release directory (chapters, sections, and the tabular order file), zipped. Imported asynchronously, same as SNOMED CT.
+
+- `icd10cm-version` (query parameter, optional) — version to record on the CodeSystem.
+- CodeSystem url: `http://hl7.org/fhir/sid/icd-10-cm`.
+- Only one ICD-10-CM import may run at a time (independent of the SNOMED CT single-flight guard); a concurrent request returns `409`.
+
+**SNOMED CT and ICD-10-CM imports run in the background.** The request returns `201 Created` as soon as the archive is extracted, before the concepts are loaded. A full release takes several minutes; check the server logs for progress and for the completion summary.
 
 Re-uploading the same url and version replaces the previous load rather than duplicating it. If the import fails partway, the partial load is removed.
 
@@ -122,7 +130,7 @@ The service will start on port `9090` by default.
 
 - `service.bal` — Main service implementation.
 - `types.bal`, `utils.bal`, `data_mapping.bal`, etc. — Supporting modules and utilities.
-- `modules/` — Contains submodules for LOINC, SNOMED, and persistence.
+- `modules/` — Contains submodules for LOINC, SNOMED, ICD-10-CM, and persistence.
 - `tests/` — Test cases and sample resources.
 
 ## Supported DB Types and Configurations

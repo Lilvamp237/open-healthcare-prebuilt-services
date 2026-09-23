@@ -1,0 +1,3 @@
+00001 E11     0 Type 2 diabetes mellitus                                    Type 2 diabetes mellitus
+00002 E119    1 Type 2 diabetes mellitus wo complications                   Type 2 diabetes mellitus without complications
+00003 E118    1 Type 2 diabetes mellitus w unsp complication                Type 2 diabetes mellitus with unspecified complications

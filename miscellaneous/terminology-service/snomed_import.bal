@@ -341,7 +341,7 @@ isolated function flushClosureBatch(ClosureRow[] rows, int codeSystemId) returns
     psql:ExecutionResult|persist:Error result = sClient->executeNativeSQL(query);
     if result is persist:Error {
         return r4:createFHIRError(
-                "Error while inserting SNOMED closure batch: " + result.message(),
+                "Error while inserting closure batch: " + result.message(),
                 r4:ERROR,
                 r4:INVALID_REQUIRED,
                 cause = result,
@@ -453,7 +453,7 @@ isolated function flushConceptBatch(store_h2:ConceptInsert[] batch) returns int[
     int[]|persist:Error result = sClient->/concepts.post(batch);
     if result is persist:Error {
         return r4:createFHIRError(
-                "Error while inserting SNOMED concept batch: " + result.message(),
+                "Error while inserting concept batch: " + result.message(),
                 r4:ERROR,
                 r4:INVALID_REQUIRED,
                 cause = result,

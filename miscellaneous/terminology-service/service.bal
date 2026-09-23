@@ -413,12 +413,12 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
             international401:TerminologyCapabilities terminologyCapabilities = {
                 "resourceType": "TerminologyCapabilities",
                 "id": "wso2-ballerina-terminology-service",
-                "url": "http://localhost:9089/fhir/r4/terminology-capabilities",
+                "url": "http://localhost:9090/fhir/r4/terminology-capabilities",
                 "version": "0.1.1",
                 "name": "WSO2BallerinaTerminologyServiceCapabilities",
                 "title": "WSO2 Ballerina FHIR R4 Terminology Service — TerminologyCapabilities",
                 "status": "active",
-                "date": "2025-06-17",
+                "date": "2026-09-23",
                 "publisher": "WSO2 LLC.",
                 "contact": [
                     {
@@ -438,8 +438,8 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                     "version": "7.0.1"
                 },
                 "implementation": {
-                    "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9089",
-                    "url": "http://localhost:9089/fhir/r4"
+                    "description": "WSO2 Ballerina FHIR R4 Terminology Service — database-backed (PostgreSQL or H2), running on port 9090",
+                    "url": "http://localhost:9090/fhir/r4"
                 },
                 "lockedDate": false,
                 "codeSearch": "all",
@@ -461,6 +461,17 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
                             {
                                 "code": "*",
 
+                                "isDefault": false,
+                                "compositional": false
+                            }
+                        ],
+                        "subsumption": true
+                    },
+                    {
+                        "uri": "http://hl7.org/fhir/sid/icd-10-cm",
+                        "version": [
+                            {
+                                "code": "*",
                                 "isDefault": false,
                                 "compositional": false
                             }
@@ -515,7 +526,7 @@ service http:InterceptableService /fhir/r4/metadata on baseListener {
         } else {
             international401:CapabilityStatement capabilityStatement = {
                 status: "active",
-                date: "2025-06-17",
+                date: "2026-09-23",
                 publisher: "Ballerina FHIR Terminology Service",
                 description: "CapabilityStatement for the Ballerina FHIR Terminology Service API.",
                 kind: "instance",

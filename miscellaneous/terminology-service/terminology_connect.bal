@@ -1841,7 +1841,7 @@ public isolated function addConceptMap(r4:FHIRContext ctx, r4:ConceptMap concept
     }
 }
 
-# Handles bulk upload of terminology content from a zip file, dispatched by the mandatory `${TYPE_HEADER}` header. FHIR content is loaded as raw CodeSystem/ValueSet JSON; LOINC content is converted to FHIR then added as a single `CodeSystem`; SNOMED content is imported asynchronously in the background (this call returns immediately with `()` while the import runs and logs its own completion).
+# Handles bulk upload of terminology content from a zip file, dispatched by the mandatory `${TYPE_HEADER}` header. FHIR content is loaded as raw CodeSystem/ValueSet JSON; LOINC content is converted to FHIR then added as a single `CodeSystem`; SNOMED and ICD-10-CM content are each imported asynchronously in the background (this call returns immediately with `()` while the import runs and logs its own completion).
 #
 # + payload - The incoming zip-file request, with the terminology type indicated by the `${TYPE_HEADER}` header
 # + return - An `r4:FHIRError` if the payload is missing, has an unsupported content type/header, or fails to process, `()` otherwise
@@ -1863,15 +1863,15 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
                     string `Missing ${TYPE_HEADER} header in the request`,
                     r4:ERROR,
                     r4:INVALID_REQUIRED,
-                    diagnostic = string `The request should contains ${TYPE_HEADER} header and supported values are: FHIR, LOINC and SNOMED`,
+                    diagnostic = string `The request should contains ${TYPE_HEADER} header and supported values are: FHIR, LOINC, SNOMED and ICD10`,
                     httpStatusCode = http:STATUS_BAD_REQUEST);
         }
-        else if typeHeader != FHIR && typeHeader != LOINC && typeHeader != SNOMED {
+        else if typeHeader != FHIR && typeHeader != LOINC && typeHeader != SNOMED && typeHeader != ICD10 {
             return r4:createFHIRError(
                     string `Invalid ${TYPE_HEADER} header value`,
                     r4:ERROR,
                     r4:INVALID_REQUIRED,
-                    diagnostic = string `The request should contains ${TYPE_HEADER} header and supported values are: FHIR, LOINC and SNOMED`,
+                    diagnostic = string `The request should contains ${TYPE_HEADER} header and supported values are: FHIR, LOINC, SNOMED and ICD10`,
                     httpStatusCode = http:STATUS_BAD_REQUEST);
         }
 
@@ -1914,6 +1914,23 @@ public isolated function upload(http:Request payload) returns r4:FHIRError? {
             string? version = payload.getQueryParamValue("snomed-version");
             _ = start runSnomedImportAsync(dirPath + ZIP_FILE_EXTRACTION_PATH, version, dirPath);
             log:printInfo("SNOMED import scheduled in background; check server logs for completion.");
+            return ();
+        }
+
+        // ICD-10-CM
+        else if typeHeader == ICD10 {
+            if !tryAcquireIcd10cmImportLock() {
+                _ = start removeDirectory(dirPath);
+                return r4:createFHIRError(
+                        "An ICD-10-CM import is already in progress",
+                        r4:ERROR,
+                        r4:PROCESSING,
+                        diagnostic = "Only one ICD-10-CM import may run at a time. Wait for the current import to finish (check server logs) before retrying.",
+                        httpStatusCode = http:STATUS_CONFLICT);
+            }
+            string? version = payload.getQueryParamValue("icd10cm-version");
+            _ = start runIcd10cmImportAsync(dirPath + ZIP_FILE_EXTRACTION_PATH, version, dirPath);
+            log:printInfo("ICD-10-CM import scheduled in background; check server logs for completion.");
             return ();
         }
 

@@ -69,6 +69,13 @@ public isolated function buildIcd10cmImport(string dirPath, string? version) ret
         });
     }
 
+    // Raw codes known to actually exist in the order file - used below to
+    // skip placeholder "X" levels when resolving a code's parent.
+    map<boolean> knownRawCodes = {};
+    foreach OrderFileRow row in orderRows {
+        knownRawCodes[row.rawCode] = true;
+    }
+
     int maxRawLength = 0;
     IcdConceptImport[] codeConcepts = [];
     foreach OrderFileRow row in orderRows {
@@ -87,7 +94,14 @@ public isolated function buildIcd10cmImport(string dirPath, string? version) ret
             // the other ~98,700.
             parentCode = sectionId is string ? SECTION_ID_PREFIX + sectionId : ();
         } else {
+            // Drop trailing characters until landing on a raw code that
+            // actually exists in the order file - a single drop can land on
+            // a placeholder "X" filler position that was never a 
+            // real code, whose real parent is one or more levels further up.
             string parentRawCode = row.rawCode.substring(0, rawLength - 1);
+            while parentRawCode.length() > CATEGORY_CODE_LENGTH && !knownRawCodes.hasKey(parentRawCode) {
+                parentRawCode = parentRawCode.substring(0, parentRawCode.length() - 1);
+            }
             parentCode = formatIcd10cmCode(parentRawCode);
         }
 

@@ -98,7 +98,7 @@ Expects a SNOMED CT RF2 Snapshot release zip, containing the Concept, Descriptio
 
 ### ICD-10-CM
 
-Expects an ICD-10-CM release directory (chapters, sections, and the tabular order file), zipped. Imported asynchronously, same as SNOMED CT.
+Expects a zip of the ICD-10-CM release files: the tabular XML (`icd10cm-tabular-<year>.xml`, for chapters and sections) and the order file (`icd10cm-order-<year>.txt`, for codes and descriptions). Files may be nested in subdirectories. Imported asynchronously, same as SNOMED CT.
 
 - `icd10cm-version` (query parameter, optional) — version to record on the CodeSystem.
 - CodeSystem url: `http://hl7.org/fhir/sid/icd-10-cm`.

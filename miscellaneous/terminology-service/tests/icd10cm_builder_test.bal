@@ -112,6 +112,18 @@ public function testBuildIcd10cmCodeSystemMetadataWithNoVersion() {
 }
 
 @test:Config {
+    groups: ["unit", "icd10cm_mapping", "successful_scenario"]
+}
+public function testBuildIcd10cmCodeSystemMetadataWithNonDateVersion() {
+    // icd10cm-version is free text - a value that isn't shaped like a FHIR date 
+    // must still be recorded as the version, but must NOT be written to date,
+    //  which would otherwise store an invalid FHIR dateTime.
+    r4:CodeSystem cs = icd10cm:buildIcd10cmCodeSystemMetadata("FY2027");
+    test:assertEquals(cs.version, "FY2027");
+    test:assertEquals(cs.date, ());
+}
+
+@test:Config {
     groups: ["unit", "icd10cm_parsing", "successful_scenario"]
 }
 public function testStreamOrderFile() returns error? {
@@ -121,8 +133,8 @@ public function testStreamOrderFile() returns error? {
     icd10cm:OrderFileRow[] rows = result[0];
     int rowsRead = result[1];
 
-    test:assertEquals(rowsRead, 3);
-    test:assertEquals(rows.length(), 3);
+    test:assertEquals(rowsRead, 4);
+    test:assertEquals(rows.length(), 4);
 
     // Category row: unchanged (3-char) code, non-billable.
     test:assertEquals(rows[0].rawCode, "E11");
@@ -140,6 +152,14 @@ public function testStreamOrderFile() returns error? {
     test:assertEquals(rows[2].code, "E11.8");
     test:assertEquals(rows[2].billable, true);
     test:assertEquals(rows[2].display, "Type 2 diabetes mellitus with unspecified complications");
+
+    // Placeholder-"X" leaf: "E119X" is never a real code in the order
+    // file - only formatIcd10cmCode's own dotted conversion
+    // is exercised at this parsing layer.
+    test:assertEquals(rows[3].rawCode, "E119XA");
+    test:assertEquals(rows[3].code, "E11.9XA");
+    test:assertEquals(rows[3].billable, true);
+    test:assertEquals(rows[3].display, "Type 2 diabetes mellitus without complications, placeholder example");
 }
 
 @test:Config {
@@ -173,12 +193,11 @@ public function testBuildIcd10cmImportEndToEnd() returns error? {
 
     test:assertEquals(bundle.chaptersRead, 1);
     test:assertEquals(bundle.sectionsRead, 1);
-    test:assertEquals(bundle.orderFileRowsRead, 3);
-    // chapter + section + 3 order-file rows.
-    test:assertEquals(bundle.concepts.length(), 5);
+    test:assertEquals(bundle.orderFileRowsRead, 4);
+    // chapter + section + 4 order-file rows.
+    test:assertEquals(bundle.concepts.length(), 6);
 
-    // Topological order: chapter first, then section, then codes by raw
-    // length ascending (category "E11" before the 4-char leaves).
+    // Topological order: chapter first, then section, then codes by raw length ascending.
     test:assertEquals(bundle.concepts[0].code, icd10cm:CHAPTER_ID_PREFIX + "4");
     test:assertEquals(bundle.concepts[0].parentCode, ());
 
@@ -195,6 +214,13 @@ public function testBuildIcd10cmImportEndToEnd() returns error? {
 
     test:assertEquals(bundle.concepts[4].code, "E11.8");
     test:assertEquals(bundle.concepts[4].parentCode, "E11");
+
+    // Regression coverage for the placeholder-"X" parent-resolution fix:
+    // "E11.9XA"'s naive truncated parent "E119X" is never a real 
+    // order-file row, so resolution must keep dropping characters until
+    // it lands on "E119" ("E11.9").
+    test:assertEquals(bundle.concepts[5].code, "E11.9XA");
+    test:assertEquals(bundle.concepts[5].parentCode, "E11.9");
 
     test:assertEquals(bundle.codeSystemMetadata.version, "2026-10-01");
     test:assertEquals(bundle.codeSystemMetadata.content, r4:CODE_CONTENT_COMPLETE);

@@ -39,10 +39,15 @@ public isolated function buildIcd10cmCodeSystemMetadata(string? version) returns
     };
     if version is string && version != "" {
         codeSystem.version = version;
-        // The chosen version convention for this CodeSystem is already a
-        // plain FHIR date (the release's effective date), so it doubles as
-        // CodeSystem.date with no reformatting.
-        codeSystem.date = version;
+        // The chosen version convention for this CodeSystem is a plain FHIR
+        // date (the release's effective date, e.g. "2026-10-01"), so it
+        // doubles as CodeSystem.date - but icd10cm-version is free text (see
+        // README), so only reuse it when it's actually shaped like a FHIR
+        // date; otherwise leave date unset rather than storing an invalid
+        // dateTime.
+        if re `^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$`.isFullMatch(version) {
+            codeSystem.date = version;
+        }
     }
     return codeSystem;
 }

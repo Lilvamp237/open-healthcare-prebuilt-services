@@ -64,16 +64,17 @@ The service exposes the following main endpoints under `/fhir/r4`:
 ### Other Operations
 
 - `POST /` — Batch validate ValueSets.
-- `POST /$upload` — Upload terminology resources.
-- `POST /$upload` — Upload terminology resources as a zip. See [Uploading Terminology Content](#uploading-terminology-content).
+- `POST /%24upload`\* — Upload terminology resources as a zip. See [Uploading Terminology Content](#uploading-terminology-content).
 - `POST /$closure` — [ConceptMap/$closure](https://hl7.org/fhir/R4/conceptmap-operation-closure.html): maintain a client-named, incrementally-growing subsumption closure table. Each call adds the given `concept`s to the named table (`name` parameter) and returns only the subsumption pairs not yet reported for that name. Pass a previously-returned `version` to resync everything reported since that version.
 - `GET /$find-code` — Find codes.
 - `POST /$find-code` — Find codes with a POST body.
 - `GET /metadata` — Get the FHIR CapabilityStatement.
 
+\* `$upload` must currently be called with the `$` percent-encoded (`%24upload`) - a bug in the pinned Ballerina http module (2.14.13) 404s on a raw `$` in the path for this endpoint. This will go away once the Ballerina distribution is upgraded past that bug.
+
 ## Uploading Terminology Content
 
-`POST /$upload` accepts a zip archive. Two things are required on the request:
+`POST /%24upload` (see footnote above) accepts a zip archive. Two things are required on the request:
 
 - `Content-Type: application/zip`
 - `x-terminology-type` header, set to `FHIR`, `LOINC`, `SNOMED`, or `ICD10`

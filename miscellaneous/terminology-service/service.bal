@@ -347,6 +347,17 @@ service /fhir/r4 on new fhirr4:Listener(config = apiConfig) {
     }
 }
 
+// TEMPORARY (api-conformance): unlike $find-code/$closure/$versions, $upload can't
+// move onto the fhirr4:Listener-backed /fhir/r4 service above to dodge the http
+// 2.14.13 raw-`$`-in-path bug (see the comment on apiConfig.operations in
+// api_configs.bal) - it takes a raw zip file body, not a FHIR Parameters/Bundle
+// resource, and fhirr4:Listener only accepts application/fhir+json. So it stays
+// here as its own http:InterceptableService on baseListener, still going through
+// Ballerina's broken compiled path matcher. There's no way to work around this
+// from inside the service either: a raw `$` 404s before any of our code (including
+// an interceptor) ever runs, so the path can't be rewritten after the fact -
+// clients must call this endpoint as /fhir/r4/%24upload until the Ballerina
+// distribution is upgraded past the http 2.14.13 regression.
 service http:InterceptableService /fhir/r4/\$upload on baseListener {
 
     public function createInterceptors() returns [FHIRResponseErrorInterceptor] {

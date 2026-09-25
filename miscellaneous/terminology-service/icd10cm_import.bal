@@ -88,11 +88,6 @@ public isolated function importIcd10cmToDb(string dirPath, string? version) retu
     string csUrl = meta.url ?: icd10cm:ICD10CM_SYSTEM_URL;
     string csVersion = meta.version ?: "";
 
-    int replaced = check replacePriorLoads(csUrl, csVersion);
-    if replaced > 0 {
-        log:printInfo(string `ICD-10-CM replace: removed ${replaced} prior load(s) for ${csUrl}|${csVersion}`);
-    }
-
     store_h2:CodeSystemInsert codeSystemInsert = {
         id: meta.id ?: icd10cm:ICD10CM_CODE_SYSTEM_ID,
         url: csUrl,
@@ -105,6 +100,11 @@ public isolated function importIcd10cmToDb(string dirPath, string? version) retu
         codeSystem: metadataBytes
     };
 
+    // The new load is inserted (and fully populated below) BEFORE any prior
+    // load of the same url/version is removed at the end of this function -
+    // so a failure partway through this import leaves the previous,
+    // still-usable load untouched instead of deleting it first and only
+    // then discovering the replacement failed.
     int[]|persist:Error codeSystemResult = sClient->/codesystems.post([codeSystemInsert]);
     if codeSystemResult is persist:Error {
         return r4:createFHIRError(
@@ -135,6 +135,17 @@ public isolated function importIcd10cmToDb(string dirPath, string? version) retu
             log:printError(string `ICD-10-CM cleanup-on-failure failed for codeSystemId=${codeSystemId}: ${cleanup.message()}`);
         }
         return closureRowsWritten;
+    }
+
+    // The new load is fully committed and usable at this point - only now is
+    // any prior load of the same url/version removed. A failure here leaves
+    // a stale-but-harmless extra row rather than losing data, so it's logged
+    // rather than failing an otherwise-successful import.
+    int|r4:FHIRError replaced = replacePriorLoads(csUrl, csVersion, excludeCodeSystemId = codeSystemId);
+    if replaced is r4:FHIRError {
+        log:printError(string `ICD-10-CM: failed to remove prior load(s) for ${csUrl}|${csVersion} after successful replacement: ${replaced.message()}`);
+    } else if replaced > 0 {
+        log:printInfo(string `ICD-10-CM replace: removed ${replaced} prior load(s) for ${csUrl}|${csVersion}`);
     }
 
     return {

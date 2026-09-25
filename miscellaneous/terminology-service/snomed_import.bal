@@ -206,11 +206,17 @@ isolated function loadConceptsAndClosure(snomed:SnomedImportBundle bundle, int c
 #
 # + url - The CodeSystem canonical URL to check for prior loads
 # + 'version - The CodeSystem version to check for prior loads
+# + excludeCodeSystemId - A codeSystemId to never delete even if it matches url/version - used to protect a just-inserted replacement load when this is called after the new load succeeds rather than before it starts
 # + return - The number of prior loads removed, or a `FHIRError` if lookup or deletion fails
-isolated function replacePriorLoads(string url, string 'version) returns int|r4:FHIRError {
-    sql:ParameterizedQuery q = sql:queryConcat(
-            `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
-            ` WHERE `, escapeToQuery("url"), ` = ${url} AND `, escapeToQuery("version"), ` = ${'version}`);
+isolated function replacePriorLoads(string url, string 'version, int? excludeCodeSystemId = ()) returns int|r4:FHIRError {
+    sql:ParameterizedQuery q = excludeCodeSystemId is int
+        ? sql:queryConcat(
+                `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
+                ` WHERE `, escapeToQuery("url"), ` = ${url} AND `, escapeToQuery("version"), ` = ${'version}`,
+                ` AND `, escapeToQuery("codeSystemId"), ` != ${excludeCodeSystemId}`)
+        : sql:queryConcat(
+                `SELECT `, escapeToQuery("codeSystemId"), ` FROM `, escapeToQuery("codesystems"),
+                ` WHERE `, escapeToQuery("url"), ` = ${url} AND `, escapeToQuery("version"), ` = ${'version}`);
     stream<record {|int codeSystemId;|}, persist:Error?> resultStream = sClient->queryNativeSQL(q);
     int[]|error ids = from var row in resultStream
         select row.codeSystemId;
